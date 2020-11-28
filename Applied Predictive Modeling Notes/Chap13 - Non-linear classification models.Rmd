@@ -1,0 +1,419 @@
+---
+title: "Chap13 - Non linear classification models"
+author: "Me"
+date: "10/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+load("grantData.RData")
+```
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+```{r}
+library(caret)
+```
+Control object that will be used across multiple models so that data splitting is consistent
+```{r}
+ctrl = trainControl(method = 'LGOCV',
+                    summaryFunction = twoClassSummary,
+                    classProbs = T,
+                    index = list(TrainSet = pre2008),
+                    savePredictions = T)
+
+set.seed(476)
+mda_fit = train(x = training[,predictorsNoNZV], 
+                y = training$Class, 
+                method = 'mda',
+                metric = 'ROC', 
+                tries = 40,
+                tuneGrid = expand.grid(subclasses = 1:8),
+                trControl = ctrl)
+mda_fit
+```
+```{r}
+plot(mda_fit)
+```
+
+```{r}
+mda_fit$results = mda_fit$results[!is.na(mda_fit$results$ROC),]
+mda_fit$pred = merge(mda_fit$pred, mda_fit$bestTune)
+mda_cm = confusionMatrix(mda_fit, norm = 'none')
+mda_cm
+```
+```{r}
+library(pROC)
+mda_fit$pred
+mda_roc = roc(response = mda_fit$pred$obs, #obs value
+              ##prob succecssful
+              predictor = mda_fit$pred$successful, 
+              levels = rev(levels(mda_fit$pred$obs)))
+mda_roc
+plot(mda_roc)
+```
+
+## Neural networks
+```{r}
+nnet_grid = expand.grid(size = 1:10, decay = c(0, .1, 1, 2))
+max_size = max(nnet_grid$size)
+```
+
+Four different models are evaluated based on pre-processing and whether single or multiple models are used
+```{r}
+set.seed(476)
+nnet_fit = train(x = training[,predictorsNoNZV],
+                 y = training$Class, 
+                 method = 'nnet', 
+                 metric = 'ROC',
+                 preProcess = c('center','scale'),
+                 tuneGrid = nnet_grid, 
+                 trace = F, 
+                 maxit = 2000,
+                 maxNWts = 1*(max_size * length(predictorsNoNZV)+ 1) + max_size +1, 
+                 trControl = ctrl)
+plot(nnet_fit)
+```
+## flexible discriminant analysis  
+```{r}
+set.seed(476)
+fda_fit = train(x = training[,predictorsNoNZV],
+                 y = training$Class, 
+                 method = 'fda', 
+                 metric = 'ROC',
+                tuneGrid = expand.grid(degree = 1, nprune = 2:25),
+                 trControl = ctrl)
+plot(fda_fit)
+```
+
+```{r}
+fda_fit$pred = merge(fda_fit$pred, fda_fit$bestTune)
+fda_cm <- confusionMatrix(fda_fit, norm = "none")
+fda_cm
+```
+```{r}
+fda_roc = roc(response = fda_fit$pred$obs, 
+              predictor = fda_fit$pred$successful, 
+              levels = rev(levels(fda_fit$pred$obs)))
+
+plot(fda_roc, type = 's', legacy.axes = T)
+plot(mda_roc, type = 's',col  = rgb(.2,.2,.2,.2), add = T, legacy.axes = T)
+```
+
+## SVM
+```{r}
+library(kernlab)
+
+set.seed(201)
+sigma_range_full = sigest(as.matrix(training[,predictors]))
+svm_grid_full = expand.grid(sigma = as.vector(sigma_range_full[1]), C = 2^(-3:4))
+```
+```{r}
+set.seed(476)
+svmR_fit_full = train(x = training[,predictors],
+                      y = training$Class, 
+                      method = 'svmRadial',
+                      metric = 'ROC',
+                      preProcess = c('center','scale'),
+                      tuneGrid = svm_grid_full,
+                      trControl = ctrl)
+svmR_fit_full
+```
+```{r}
+set.seed(202)
+sigma_reduced = sigest(as.matrix(training[,predictorsNoNZV]))
+svm_grid_reduced = expand.grid(sigma = sigma_reduced[1],
+                               C = 2^seq(-4,4))
+```
+```{r}
+set.seed(476)
+svmR_fit_reduced = train(x = training[,predictorsNoNZV],
+                      y = training$Class, 
+                      method = 'svmRadial',
+                      metric = 'ROC',
+                      preProcess = c('center','scale'),
+                      tuneGrid = svm_grid_reduced,
+                      trControl = ctrl)
+```
+
+
+#computing
+The following R packages are discussed in this chapter: caret, earth, kernlab, klaR, MASS,mda, nnet, rrcov
+
+```{r}
+load("grantData.RData")
+```
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+Non linear discriminant analysis
+A number of packages are available to perform varieties of non linear discriminant analysis described earlier in this chapter. QDA is implemented in `qda` function in the MASS as well as an outlier resistant version in the `QDAcov` function in the rrcov package. RDA is available in the `rda` function in the klaR package and MDA is found in the mda package. The syntax for these models are very similar as we will demonstrate their usage by fitting MDA model to the grant data
+
+The mda function has model formula interface. The tuning parameter is the number of subclass per class, which do not have to be the same for each class. For example, to fit an MDA model to the grant data with three subpopulations per class
+```{r}
+library(mda)
+
+mda_model = mda(Class ~ ., ##reduce the data to relevant predictors
+                data = training[pre2008, c('Class',predictorsNoNZV)],
+                subclasses = 3)
+mda_model
+```
+```{r}
+predict(mda_model, newdata = head(training[-pre2008, predictorsNoNZV]))
+```
+Each of these non linear discriminant models can be built and optimal tuning parameters can be found using caret package. 
+```{r}
+library(caret)
+ctrl = trainControl(method= 'LGOCV',
+                    summaryFunction = twoClassSummary,
+                    classProbs = T,
+                    index = list(TrainSet = pre2008),
+                    savePredictions = T)
+```
+
+```{r}
+mda_fit = train(training[,predictorsNoNZV], training$Class,
+                method = 'mda',
+                metric = 'ROC',
+                tuneGrid = expand.grid(.subclasses = 1:8),
+                trControl = ctrl)
+plot(mda_fit)
+```
+
+Similar syntax can be used for RDA using method  = 'rda' and QDA method values either 'rda' or 'QDAcov' for outlier resistant version. 
+A penalized version is also available in the sparseLDA package with smda function
+
+## Neural netowrks
+There are many R packages for neural networks including nnet, RSNNS, qrnn, and neuralnet. 
+The analyses here focus on the nnet package. The syntax is extremely similar to regression except for few exceptions. The `linout` argument should be set to false since most classification models use sigmoidal transformations to relate hidden units to the outputs. The SSE or entropy estimates model parameters and logical arguments `softmax` and `entropy` toggle betweem the two
+
+The package has both formula and interface for passing matrices or dataframes with predictors and the outcome. For the latter, the outcome cannot be a factor variable and must be conveted to set of C binary indicators. the package contains a function `class.ind` that is useful for making this conversion
+```{r}
+library(nnet)
+head(class.ind(training$Class))
+```
+
+Using formula interface to fit a simple model
+```{r}
+set.seed(800)
+nnet_mod = nnet(Class ~ NumCI + CI.1960, data = training[pre2008,], size = 3, decay = .1)
+```
+```{r}
+nnet_mod
+```
+```{r}
+predict(nnet_mod, newdata = head(testing))
+```
+
+```{r}
+predict(nnet_mod, newdata = head(testing), type = 'class')
+```
+When three or more classes are modeled, the basic call to predict produces columns for each class.
+
+AS before, train provides a wrapper to this function to tune the model over the amount of weight decay and number of hidden units. THe same model code is used (method = 'nnet') and either model interface is availabele. although train does allow factor for classes using class.ind to internally encode dummy variables. Also, as in regression model, model averaging can be used using `avNNET` function or train with method = 'avNNET'
+
+```{r}
+nnet_grid  = expand.grid(.size = 1:10, 
+                         .decay = c(0, .1, 1, 2))
+max_size = max(nnet_grid$.size)
+num_wts = 1 * (max_size * (length(predictorsNoNZV) +1 ) + max_size+1)
+```
+
+```{r}
+set.seed(476)
+nnet_fit = train(x = training[,predictorsNoNZV],
+                 y = training$Class,
+                 method = 'nnet',
+                 metric = 'ROC',
+                 preProcess = c('center','scale','spatialSign'),
+                 tuneGrid = nnet_grid,
+                 trace = F,
+                 maxit = 2000,
+                 MaxNWts = num_wts,
+                 trControl = ctrl)
+nnet_fit
+plot(nnet_fit)
+```
+
+
+## Flexible discriminant analyis
+The mda package contains function `fda` for building this model, The model accepts formula interface and has option method that specifies the exact method for estimating regression parameters. To use FDA with MARS there are two approaches. `method = mars` uses MARS implementation in the mda package. However, the earth package, fits MARS with wider range of options. Here, load the earth package and then specify `method = 'earth'`. For example, a simple FDA model for the grant application data could be created as
+```{r}
+library(mda)
+library(earth)
+
+fda_model = fda(Class ~ Day + NumCI, data = training[pre2008,], method = earth)
+fda_model
+summary(fda_model$fit)
+```
+Note that the model coefficients shown here have not been postprocessed. The final model coefficients can be found with (coef(fda_model))
+```{r}
+coef(fda_model)
+```
+To predict 
+```{r}
+predict(fda_model, head(training[-pre2008,]))
+```
+The train function can be used with method = 'fda' to tune this model over number of retained terms. VarImp function determines predictor importance in the same manner from MARS models
+
+## SVM
+
+There are number of R packages with implementation for SVM and other kernel methods including e1071, kernlab, klaR, svmPath. THe most comprehensive of this is kernlab.
+
+The syntax for SVM classification is largely the same as regression case. Although episilon parameter is only relevant for regression, there are other few parameters useful for classification
+
+logical `prob.model` argument triggers `ksvm` to estimate additional set of parameters for a sigmoidal function to translate SVM decision values to class probs using method by Plat 2000. If this option is not set to TRUe, class probabilities are not predicted
+
+`class.weights` assigns assymetric costs to each class. This can be important if one or more specific errors are more harmful than othersor when there are severe class imbalance that biases the model. The syntax here is to use a named vector of weights or costs. For example, if there was a desire to bias the grant model to deterct unsucessful grants, the sytax would be
+
+class.weights = c(successful = 1, unsuccessful = 5)
+
+This makes false-negative error five times more costly than a false positive error. Note that the implementation of class weights in `ksvm` affects the predicted class, but class probs is not affected
+
+The following code fits a radial basis function to reduced set of predictors
+```{r}
+library(kernlab)
+set.seed(202)
+
+sigma_range_reduced = sigest(as.matrix(training[,predictorsNoNZV]))
+svmR_grid_reduced = expand.grid(.sigma = sigma_range_reduced[1],
+                                .C = 2^seq(-4,4))
+```
+
+```{r}
+set.seed(476)
+svmR_model = train(training[,predictorsNoNZV], y = training$Class, 
+                   method = 'svmRadial',
+                   metric = 'ROC',
+                   preProcess = c('center','scale'), 
+                   tuneGrid = svmR_grid_reduced,
+                   fit = F, 
+                   trControl = ctrl)
+svmR_model
+plot(svmR_model)
+```
+
+When the outcome is a factor, the function automatically uses `prob.model = T`
+
+Other kernel functions can be defined via `kernel` or `kpar` arguments. Prediction of new samples are as follows
+```{r}
+library(kernlab)
+predict(svmR_model, newdata = head(training[-pre2008,predictorsNoNZV]))
+```
+```{r}
+predict(svmR_model, newdata = head(training[-pre2008,predictorsNoNZV]), type = 'prob')
+```
+
+#KNN
+
+Fitting a KNN classification model has a similar syntax to fitting regression model. the `caret` package with method set to knn generates this model
+```{r}
+set.seed(476)
+knn_fit = train(training[,predictors], training$Class, 
+                method = 'knn',
+                metric = 'ROC',
+                preProcess = c('center','scale'),
+                tuneGrid = data.frame(.k = c(4*(0:5)+1, 20*(1:5)+1, 50*(2:9)+1)),
+                trControl = ctrl)
+```
+```{r}
+plot(knn_fit)
+```
+
+
+The following code predicts test data and corresponding ROC curve
+```{r}
+library(pROC)
+knn_fit$pred= merge(knn_fit$pred, knn_fit$bestTune)
+knn_roc = roc(response = knn_fit$pred$obs, 
+              predictor = knn_fit$pred$successful,
+              levels = rev(levels(knn_fit$pred$obs)))
+plot(knn_roc, legacy.axes = T)
+```
+## Naive Bayes
+The two main functions for fitting naive bayes models in R are `naiveBayes` in the 1071 package and `NaiveBayes` in the klaR package. Both offer laplace corrections but the version in klaR has the option of using conditional density estimates that are more flexible
+
+Both functions accept the formula and non formula approaches to specifying model terms. However, feeding these models binary dummy variables is problematic since individual categories will be treated as numerical data and the model will estimate probability density function from continous distribution
+
+To follow the strategy described above where many of the predictors are converted to factor variables, we create alternate versions of training and test sets
+
+```{r}
+## some predictors are already stored as factors
+factors = c('SponsorCode', 'ContractValueBand', 'Month','Weekday')
+
+#get other predictors
+nb_predictors = factorPredictors[factorPredictors %in% predictorsNoNZV]
+nb_predictors = c(nb_predictors, factors)
+```
+
+Leek only those that are needed
+```{r}
+nb_training = training[,c('Class', nb_predictors)]
+nb_testing = testing[,c('Class', nb_predictors)]
+```
+
+Loop through predictors and convert some factors
+```{r}
+for (i in nb_predictors){
+  var_levels = sort(unique(training[,i]))
+  
+  if (length(var_levels) <= 15){
+    nb_training[,i] = factor(nb_training[,i], levels = paste(var_levels))
+    nb_testing[,i] = factor(nb_testing[,i], levels = paste(var_levels))
+  }
+}
+```
+```{r}
+nb_testing
+```
+
+
+Now we can use NaiveBayes function's formula interface to create a model:
+```{r}
+library(klaR)
+nbayes_fit = NaiveBayes(Class ~., data = nb_training[pre2008,],
+                        ##should non parametric estimate be used?
+                        usekernel = T,
+                        ##laplace correction value
+                        fL = 2)
+
+predict(nbayes_fit, newdata = head(nb_testing))
+```
+In some cases warning appears. The predict function for this model has an argumetn called `threshold` that replaces zero values with a small non zero .001
+
+The train function treats the density estimate method (i.e usekernel) and correction as tuning parameters. By default, it evaluates probabilities with normal distribution and non parametric method and no laplace correction
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,341 @@
+---
+title: "Chap3 - Data Preprocessing"
+author: "Me"
+date: "9/4/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Computing
+
+This section uses data from APM package and functions from caret, corrplot, e1071, and lattice packages. 
+```{r}
+library(AppliedPredictiveModeling)
+library(caret)
+library(tidyverse)
+```
+
+Function apropos will search any loaded R packages for a given term. For example, to find function for creating a confusion matrix
+```{r}
+apropos('confusion')
+```
+To find such a function in any package, RSiteSearch function can help. 
+```{r}
+RSiteSearch('confusion', restrict = 'functions')
+```
+
+The raw segmentation data set is contained in the APM package.
+```{r}
+library(AppliedPredictiveModeling)
+data("segmentationOriginal")
+segmentationOriginal
+```
+Filter data for test
+```{r}
+segData = segmentationOriginal %>%
+  filter(Case == 'Train')
+```
+
+
+The class and cell fields will be saved into separate vectors, then removed from the main object
+```{r}
+cellID = segData$Cell
+class = segData$Class
+case = segData$Case
+
+#remove these columns
+segData = segData %>%
+  select(-Cell, -Case, -Class)
+
+segData
+```
+
+The original data contained several status columns which were binary versions of the predictors. To remove these, we find colum names containing status and remove them
+
+```{r}
+StatusColNum = grep('Status', names(segData))
+segData[,-StatusColNum]
+```
+
+```{r}
+#same solution as above
+segData  = segData %>%
+  select(-contains('Status'))
+segData
+```
+
+## Transformations
+Skewness functtion of e1071 package calculates the sample skewness statistics for each predictor
+```{r}
+library(e1071)
+
+#1 predictor
+skewness(segData$AngleCh1)
+
+#all predictors
+map_lgl(segData, is.numeric)
+skewness_value = map_dbl(segData, skewness) %>%
+  as.numeric()
+
+skewness_names = map_dbl(segData, skewness) %>%
+  names()
+
+tibble(
+  name = skewness_names,
+  value = skewness_value
+)
+```
+
+Using this values, variables could be prioritized for visualizing the distribution. To determine the type of transformation to be used, MASS package contains boxcox functions that estimates lambda, it does not create the transformed. Caret function can find appropriate lambda and apply it to new data
+```{r}
+library(caret)
+Ch1AreaTrans = BoxCoxTrans(segData$AreaCh1)
+Ch1AreaTrans
+```
+
+```{r}
+#original data
+head(segData$AreaCh1)
+
+#after transformation
+predict(Ch1AreaTrans, head(segData$AreaCh1))
+```
+
+Another caret function, preprocess, applies this transformation to a set of predictors. The function is discussed below. The function `prcomp` can be used for PCA. The data are centered and scaled prior to PCA
+```{r}
+pcaObject = prcomp(segData, center = T, scale. = T)
+
+#calculate the percentage of variance explained within component
+percent_var = pcaObject$sd^2/sum(pcaObject$sd^2)*100
+head(percent_var)
+sum(percent_var[1:19])
+```
+The transformed values are stored in pcaObject as sub object x
+```{r}
+pcaObject$x[,1:5] %>%
+  head()
+```
+Another sub object is rotation which stores variable loadings where rows correspond to predictor variables and columns associated with the components
+```{r}
+pcaObject$rotation[,1:3] %>%
+  head()
+```
+The caret package class `spatialSign` contains functionality for the spatial sign transformation. Although we will not apply this to this data, the basic syntax would be spatialSign(segData)
+
+To impute missing values, impute package has a function impute.knn that uses k-nearest neighbors to estimate missing data. THe previously mentioned preprocess function applies imputation method based on K-nearest neighbors or bagged trees. 
+
+To administer set of transformations to multiple datasets, the caret `preProcess` has the ability to transform, center, scale, or impute values, as well as apply the spatial sign transformation and feature extraction. The function calculates the required quantities for the transformation. AFter calling the  function, the `predict` method applies the results to a set of data. For example:
+```{r}
+trans = preProcess(segData, method = c('BoxCox','center','scale','pca'))
+
+#apply the transformation
+transformed = predict(trans, segData)
+
+#these values are different than the previous PCA components since they were transformed prior to PCA
+names(transformed)
+head(transformed[, 1:5])
+```
+
+The order in which possible transformation are applied is transformation, centering, scaling, imputation, feature extraction, and then spatial sign. Many modeling functions have options to center and scale prior to modeling. For example, when using train function, there is an option to use `preProcess` prior to modeling within the resampling iterations. 
+
+## Filtering
+
+To filter non zero variance predictors, the caret package function `nearZeroVar` will return the column numbers of any predictors that fulfill the conditions outlined in the near zero variance discussion. For cell segmentation data, there are no problematic predictors. 
+```{r}
+nearZeroVar(segData)
+
+#when there is a return value, a vector if integers is returned that indicates which columns should be removed
+```
+Similarly, to filter between-predictor correlation, the `cor` function can calculate correlations between predictor variables:
+```{r}
+correlations = cor(segData)
+head(correlations[,1:5])
+```
+
+To visually examine the correlation structure data, the corrplot package contains an excellent function of the same name. The function has many options including one that will order the variables in a way that reveals clusters of highly correlated predictors. 
+```{r}
+library(corrplot)
+corrplot(correlations, order = 'hclust')
+```
+The size and color of the points are associated with the strength of correlation between the two predictor variables. 
+To filter based on correlation, the findCorrelation function will apply the algorithm in sect 3.5. For a given threshold of pairwise correlations, the function returns column numbers for denoting predictors that are recommended for deletion
+```{r}
+high_corr = findCorrelation(correlations, cutoff = .75)
+high_corr
+
+filtered_seg_data = segData[,-high_corr]
+filtered_seg_data
+```
+
+There are also several functions in the subset package that can accomplish the same goal. 
+
+## Creating dummy var
+
+Several methods exist for creating dummy variable based on the model. One approach, the formula method, allows great flexibility to create model function. Using formulas in the model functions parameterizes predictors such that not all categories have dummy variables. This approach will be shown in greater detail for linear regression
+
+There are cases where the complete set of dummy variable is useful. The splits of tree-based model is more interpretable if dummy variables encode all the information for the predictor. We recommend using fullset of dummy variables when working with the tree-based model
+
+```{r}
+data("cars")
+
+type <- c("convertible", "coupe", "hatchback", "sedan", "wagon")
+cars$Type <- factor(apply(cars[, 14:18], 1, function(x) type[which(x == 1)]))
+
+carSubset <- cars[sample(1:nrow(cars), 20), c(1, 2, 19)]
+
+levels(carSubset$type)
+```
+To model the price as a function of mileage and type of car, we can use the function `dummyVars` to determine encodings for the predictors. Suppose our first model assumes that the price can be modeled as simple additive function of mileage and type
+
+```{r}
+simple_mod = dummyVars(~Mileage + Type, data = carSubset, levelsOnly = T)
+```
+To generate dummy variable for the training set or any new samples, using predict with the dummyvars object
+```{r}
+predict(simple_mod, head(carSubset))
+```
+The type field was expanded into five variables for five factor levels. The model is simple because it assumes that the effect of mileage is the same for every type of car. To fit a more advanced model, we could assume that there is an interaction or joint effect. Colon indicates that an interaction should be generated
+```{r}
+with_interaction = dummyVars(~Mileage + Type + Mileage: Type, data = carSubset, levelsOnly = T)
+```
+
+```{r}
+predict(with_interaction, head(carSubset))
+```
+
+# From the repo
+
+## Sec 3.1 Case study
+
+```{r}
+library(tidyverse)
+data("segmentationData")
+segTrain = segmentationOriginal %>%
+  filter(Case == 'Train')
+
+#Remove the first 3 columns(identifier columns)
+segTrainX = segTrain %>%
+  select(-c(1,2,3))
+
+segTrainClass = segTrain$Class
+```
+
+
+## Sec 3.2 Data Transformation for Individual predictors
+
+```{r}
+max(segTrainX$VarIntenCh3)/min(segTrainX$VarIntenCh3)
+
+#High value of skewness
+skewness(segTrain$VarIntenCh3)
+
+#use caret preprocess to transform
+segPP = preProcess(segTrainX, method = 'BoxCox')
+
+#apply the transformation
+segTrainTrans = predict(segPP, segTrainX)
+
+#results for a single predictor
+segPP$bc$VarIntenCh3
+```
+
+Check the differences on the histogram between the natural units and the transformed units
+```{r}
+histogram(~segTrainX$VarIntenCh3,
+          xlab = "Natural Units",
+          type = "count")
+
+histogram(~log(segTrainX$VarIntenCh3),
+          xlab = "Log Units",
+          ylab = " ",
+          type = "count")
+
+histogram(~segTrainX$PerimCh1,
+          xlab = "Natural Units",
+          type = "count")
+
+histogram(~segTrainTrans$PerimCh1,
+          xlab = "Transformed Data",
+          ylab = " ",
+          type = "count")
+```
+
+## Data Transformation with Multiple Predictors
+
+```{r}
+#R prcomp to conduct PCA
+
+pr = prcomp(~ AvgIntenCh1 + EntropyIntenCh1, data = segTrainTrans, scale. = T)
+
+transparentTheme(pchSize = .7, trans = .3)
+
+xyplot(AvgIntenCh1 ~ EntropyIntenCh1,
+       data = segTrainTrans,
+       groups = segTrain$Class,
+       xlab = "Channel 1 Fiber Width",
+       ylab = "Intensity Entropy Channel 1",
+       auto.key = list(columns = 2),
+       type = c("p", "g"),
+       main = "Original Data",
+       aspect = 1)
+```
+
+```{r}
+pr$x %>%
+  as.data.frame() %>%
+  ggplot(aes(PC1, PC2, color = segTrain$Class))+
+  geom_point() +
+  xlim(c(-4,4))+
+  ylim(c(-4,4))+
+  coord_equal()
+```
+## Apply PCA to the entire set of predictors
+
+There are few predictors with only single value so we remove these first since PCA uses variance, which would be zero
+```{r}
+#get the columns with single value
+isZV = map_lgl(segTrainX, function(x) length(unique(x)) == 1)
+segTrainX  = segTrainX[,!isZV]
+
+#transform using boxcox, center, and scale
+segPP = preProcess(segTrainX, c('BoxCox','center','scale'))
+segTrainTrans = predict(segPP, segTrainX)
+
+#PCA
+segPCA = prcomp(segTrainTrans, center = T, scale. = T)
+
+transparentTheme(pchSize = .8, trans = .3)
+panelRange <- extendrange(segPCA$x[, 1:3])
+splom(as.data.frame(segPCA$x[, 1:3]),
+      groups = segTrainClass,
+      type = c("p", "g"),
+      as.table = TRUE,
+      auto.key = list(columns = 2),
+      prepanel.limits = function(x) panelRange)
+```
+
+```{r}
+library(GGally)
+
+ggpairs(segPCA$x %>% as.data.frame(), columns = 1:3, aes(color = segTrainClass), diag = list('naDiag'))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

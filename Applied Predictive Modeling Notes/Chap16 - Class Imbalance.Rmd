@@ -1,0 +1,311 @@
+---
+title: "Chap16 - Remedies for class imbalance"
+author: "Me"
+date: "10/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Computing
+This section uses the following packages: caret, C50, DMwR, DWD, kernlab, pROC, and rpart
+
+The insurance data are contained in DWD package
+```{r}
+library(kernlab)
+data(ticdata)
+ticdata
+```
+
+
+There are several factor variables in the dataset. Many of the factor have non standard character such as %, commas, and other values. When theser are converted to dummy variable coluns, the values violate the rules for naming new variables. To bypass this issue
+```{r}
+recodeLevels <- function(x)
+  {
+    x <- gsub("f ", "", as.character(x))
+    x <- gsub(" - ", "_to_", x)
+    x <- gsub("-", "_to_", x)
+    x <- gsub("%", "", x)
+    x <- gsub("?", "Unk", x, fixed = TRUE)
+    x <- gsub("[,'\\(\\)]", "", x)
+    x <- gsub(" ", "_", x)
+    factor(paste("_", x, sep = ""))
+}
+
+
+```
+
+
+```{r}
+#find which columns are regular factors or ordered factors
+isOrdered <- unlist(lapply(ticdata, function(x) any(class(x) == "ordered")))
+convertCols <- c("STYPE", "MGEMLEEF", "MOSHOOFD",
+                 names(isOrdered)[isOrdered])
+```
+
+
+```{r}
+for(i in convertCols) ticdata[,i] <- factor(gsub(" ", "0",format(as.numeric(ticdata[,i]))))
+ticdata$CARAVAN <- factor(as.character(ticdata$CARAVAN),
+                          levels = rev(levels(ticdata$CARAVAN)))
+```
+
+Training and test sets were created using stratified random samplign
+```{r}
+library(caret)
+
+set.seed(156)
+
+split1 <- createDataPartition(ticdata$CARAVAN, p = .7)[[1]]
+
+other     <- ticdata[-split1,]
+training  <- ticdata[ split1,]
+```
+
+Now create evaluation and test set
+```{r}
+set.seed(934)
+
+split2 <- createDataPartition(other$CARAVAN, p = 1/3)[[1]]
+
+evaluation  <- other[ split2,]
+testing     <- other[-split2,]
+predictors <- names(training)[names(training) != "CARAVAN"]
+
+testResults <- data.frame(CARAVAN = testing$CARAVAN)
+evalResults <- data.frame(CARAVAN = evaluation$CARAVAN)
+```
+
+Dummy variables are useful for several models being fit in this section. The `randomFOrest` has a limitation that all facto predictors must have not more than 32 levels. The customer type predictor has 39 levels so a predictor dummy set of variables is created for this and other models using `model.matrix` function.
+```{r}
+trainingInd <- data.frame(model.matrix(CARAVAN ~ ., data = training))[,-1]
+evaluationInd <- data.frame(model.matrix(CARAVAN ~ ., data = evaluation))[,-1]
+testingInd <- data.frame(model.matrix(CARAVAN ~ ., data = testing))[,-1]
+```
+
+add the outcome back to dataset
+```{r}
+trainingInd$CARAVAN <- training$CARAVAN
+evaluationInd$CARAVAN <- evaluation$CARAVAN
+testingInd$CARAVAN <- testing$CARAVAN
+```
+
+Determine a predictor set without highly sparse and unbalanced distribution
+```{r}
+isNZV <- nearZeroVar(trainingInd)
+noNZVSet <- names(trainingInd)[-isNZV]
+
+testResults <- data.frame(CARAVAN = testing$CARAVAN)
+evalResults <- data.frame(CARAVAN = evaluation$CARAVAN)
+```
+
+To obtain different performance measures, two wrapper functions were created
+```{r}
+fiveStats <- function(...) c(twoClassSummary(...), defaultSummary(...))
+fourStats <- function (data, lev = levels(data$obs), model = NULL)
+{
+
+  accKapp <- postResample(data[, "pred"], data[, "obs"])
+  out <- c(accKapp,
+           sensitivity(data[, "pred"], data[, "obs"], lev[1]),
+           specificity(data[, "pred"], data[, "obs"], lev[2]))
+  names(out)[3:4] <- c("Sens", "Spec")
+  out
+}
+```
+
+
+Two control functions are developed for situations when class probs can be created and when they cannot
+
+```{r}
+ctrl <- trainControl(method = "cv",
+                     classProbs = TRUE,
+                     summaryFunction = fiveStats)
+
+ctrlNoProb <- ctrl
+ctrlNoProb$summaryFunction <- fourStats
+ctrlNoProb$classProbs <- FALSE
+
+```
+
+Three baseline models were fit with the syntax
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+
+```{r}
+set.seed(1410)
+rf_fit = train(CARAVAN ~ ., data = trainingInd, 
+               method = 'rf',
+               trControl = ctrl,
+               ntree = 500, 
+               tuneLength = 1,
+               metric = 'ROC')
+```
+
+```{r}
+set.seed(1410)
+lr_fit = train(CARAVAN ~., 
+               data = trainingInd[,noNZVSet],
+               method = 'glm',
+               trControl = ctrl,
+               metric = 'ROC')
+
+fda_fit = train(CARAVAN ~., data = training,
+                method = 'fda',
+                tuneGrid = data.frame(.degree = 1, .nprune = 1:20), 
+                metric = 'ROC',
+                trControl = ctrl)
+```
+
+A dataframe is used to house the predictions from different models
+```{r}
+eval_results = data.frame(CARAVAN = evaluation$CARAVAN)
+#eval_results$RF = predict(rf_fit, newdata = evaluationInd, type = 'prob')[1]
+#eval_results$FDA = predict(fda_fit, newdata = evaluation[,predictors], type = 'prob')[1]
+eval_results$LR = predict(lr_fit, newdata = evaluationInd[,noNZVSet], type = 'prob')[,1]
+```
+
+The ROC and lift curves are created from these objects. For example
+```{r}
+library(pROC)
+lr_roc = roc(eval_results$CARAVAN, eval_results$LR, levels = rev(levels(eval_results$CARAVAN)))
+
+#create labels for the models
+
+lif1 = lift(CARAVAN ~ LR , data = eval_results)
+plot(lr_roc)
+xyplot(lif1, lwd = 2, type = 'l')
+```
+
+# Alternate cutoff
+
+After the ROC curve has been created, there are several functions in the pROC package that can be used to investigate cutoffs. `coords` function returns points on the ROC as well as deriving new cutoffs. The main arguments are `x`, which specifies what should be returned. A value of x = 'all' will return coordinates and associated cutoffs. A value of best will derive a new cutoff. Using x = 'best' in conjunction with best.method ('youden' or 'closest.topleft') can be informative
+
+```{r}
+lr_thresh = coords(lr_roc, x = 'best', best.method = 'closest.topleft')
+```
+
+For this, new predicted classes can be calculated
+```{r}
+new_value = factor(ifelse(eval_results$LR > lr_thresh, 'insurance', 'noinsurance'), levels = levels(eval_results$CARAVAN))
+```
+## Sampling methods
+
+The caret package has two functions, `downSample` and `upSample` that readjust class frequencies. Each takes arguments for predictors called x and outcome y. Both function return a dataframe
+```{r}
+set.seed(103)
+upsampled_train = upSample(x = training[,predictors], y = training$CARAVAN, 
+                           ##keep class variable to the same name
+                           yname = 'CARAVAN')
+```
+```{r}
+dim(training)
+dim(upsampled_train)
+table(upsampled_train$CARAVAN)
+```
+The downsampling function has the same syntax. A function for SMOTE can be found on DMwR package. It takes a model formula as an input, along with parameters (such as the amount of under sampling and neighbors). The basic syntax is
+
+```{r}
+library(DMwR)
+set.seed(103)
+smote_train = SMOTE(CARAVAN ~., data = training)
+dim(smote_train)
+table(smote_train$CARAVAN)
+```
+These datasets can be used as inputs to the previous modeling code
+
+## Cost sensitive training
+
+Class weighted SVMs can be created usign kernlab package. The syntax for the ksvm function is the same as previous descriptionsm but hte `class.weights` argument is put to use. The train function has similar syntax
+
+```{r}
+library(kernlab)
+
+set.seed(1157)
+sigma = sigest(CARAVAN ~ ., data = trainingInd[,noNZVSet], frac = .75)
+names(sigma) = NULL
+svm_grid = data.frame(.sigma = sigma[2], .C = 2^seq(-6,1, length = 15))
+
+```
+CLass probs cannot be generated with class weights, so use control object 'ctrlNoProb' to avoid estimating the ROC curve
+
+```{r}
+set.seed(1401)
+SVMwts = train(CARAVAN ~ ., data = trainingInd[,noNZVSet], method = 'svmRadial', 
+               tuneGrid = svm_grid, preProc = c('center','scale'), class.weights = c(insurance = 18, noinsurance=1), 
+               metric = 'Sens',
+               trControl = ctrlNoProb)
+SVMwts
+```
+
+
+Prediction uses same syntax as unweighted models
+
+For cost sensitive CART models, `rpart` package is used with the `parms` argument, which is a list of fitting options. One option, `loss` can take matrix of costs.
+```{r}
+cost_matrix = matrix(c(0,1,20,0), ncol = 2)
+rownames(cost_matrix)  = levels(training$CARAVAN)
+colnames(cost_matrix) = levels(training$CARAVAN)
+cost_matrix
+```
+Here, there would be 20-fold higher cost for false negative than false positive
+```{r}
+library(rpart)
+set.seed(1401)
+cart_costs = train(x = training[,predictors], 
+                   y = training$CARAVAN, 
+                   method = 'rpart',
+                   trControl = ctrlNoProb,
+                   metric = 'Kappa',
+                   tuneLength = 10,
+                   parms = list(loss = cost_matrix))
+cart_costs
+```
+Similar to the SVM, the snytax for generating class predictions is the same as nominal model. However, any class probabilities generated from this model may not match the predicted classes(which are a function of cost and the probs)
+
+C5.0 has similar syntax to `rpart` by taking cost matrix, although this function uses transpose of the cost structure used by rpart
+```{r}
+c5_matrix = matrix(c(0,20,1,0), ncol = 2)
+rownames(c5_matrix) = levels(training$CARAVAN)
+colnames(c5_matrix) = levels(training$CARAVAN)
+c5_matrix
+```
+```{r}
+library(C50)
+set.seed(1401)
+c5_cost = train(x = training[,predictors], 
+                y = training$CARAVAN, 
+                method = 'C5.0',
+                metric = 'Kappa',
+                cost = c5_matrix, 
+                trControl = ctrlNoProb)
+```
+
+When employing this costs, predict function only produces discrete classes (no prob)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

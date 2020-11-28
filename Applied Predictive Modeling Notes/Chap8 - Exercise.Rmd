@@ -1,0 +1,363 @@
+---
+title: "Chap8 - Exercises"
+author: "Me"
+date: "9/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+
+## 1
+Recreate simulated data from exercise 7.1
+```{r}
+library(mlbench)
+set.seed(200)
+simulated = mlbench.friedman1(200, sd = 1)
+simulated = cbind(simulated$x, simulated$y)
+simulated = as.data.frame(simulated)
+colnames(simulated)[ncol(simulated)] = 'y'
+```
+
+a - fit a random forest model to all predictors, then estimate the variable importance. Did the random forest significantly used uninformative predictors?
+```{r}
+library(randomForest)
+library(caret)
+library(tidyverse)
+model1 = randomForest(y ~., data = simulated, importance = T, ntree = 1000)
+rf_imp = varImp(model1, scale = F)
+rf_imp %>%
+  arrange(desc(Overall))
+```
+
+Add an additional predictor that is highly correlated with one of the informative predictors. For example
+```{r}
+simulated$duplicate1 = simulated$V1 + rnorm(200) * .1
+cor(simulated$duplicate1, simulated$V1)
+```
+Fit another random forest. Did importance score of v1 change? What happens when you add predictor that is highly correlated with v1
+```{r}
+model2 = randomForest(y ~., data = simulated, importance = T, ntree = 1000)
+varImp(model2, scale = F) %>%
+  arrange(desc(Overall))
+```
+
+V1 and duplicate1 shared the importance value.
+
+```{r}
+simulated$duplicate2 = simulated$V1 + rnorm(200) * 0.1
+model3 = randomForest( y ~ ., data=simulated, importance=TRUE, ntree=1000 )
+varImp(model3, scale=FALSE) %>%
+  arrange(desc(Overall))
+```
+
+
+C - Use the cforest function in the party package to fit a random forest model using conditional trees. The party package `varimp` can calculate predictor importance. The conditional argument of that function toggles between traditional importance measure and modified version by Strobl et al., (2007). Do these importance show the same pattern as traditional random forest?
+```{r}
+library(party)
+simulated$duplicate2 = NULL
+simulated$duplicate1 = NULL
+
+model1 = cforest(y ~., data = simulated)
+varimp(model1) %>%
+  as.data.frame()
+```
+
+Add correlated predictors
+```{r}
+simulated$duplicate1 = simulated$V1 + rnorm(200) * 0.1
+model2 = cforest( y ~ ., data=simulated )
+varimp(model2) %>%
+  as.data.frame()%>%
+  arrange(desc(.))
+```
+
+d - Repeat this process with different tree models. Does same pattern occur?
+```{r}
+library(gbm)
+#Try boosted trees
+simulated$duplicate1 = NULL
+model1 = gbm(y~., data= simulated, distribution = 'gaussian', n.trees = 1000)
+summary(model1, plotit = F)
+```
+
+```{r}
+#add duplicate
+simulated$duplicate1 = simulated$V1 + rnorm(200) * 0.1
+model2 = gbm( y ~ ., data=simulated, distribution="gaussian", n.trees=1000 ) 
+summary(model2, plotit = F)
+```
+
+The effect of correlation is weaker on boosted trees.
+
+
+##4
+Use a single predictor in the soluibility data, such as molecular weight or number of carbon atoms and fit sevral models
+a - simple regression tree
+b - random forest
+c - cubist model
+
+Plot the predictor data vs solubility results for the test set. Overlay prediction and test set. how do the model differ. Does changing tuning parameter affect the model?
+```{r}
+library(rpart)
+library(Cubist)
+library(randomForest)
+library(AppliedPredictiveModeling)
+data(solubility)
+```
+Use molecular weight as the predictor
+```{r}
+library(ggplot2)
+train_data = data.frame(x = solTrainXtrans$MolWeight, y = solTrainY)
+
+train_data %>%
+  ggplot(aes(x,y))+
+  geom_point()
+```
+Fit linear model
+```{r}
+lm_model = lm(y ~., data = train_data)
+lm_pred =  predict(lm_model, data.frame(x = solTestXtrans$MolWeight))
+plot(solTestY,lm_pred)
+```
+Regression tree
+```{r}
+#decreasing cp makes deeper trees; increasing max depth
+rpart_model = rpart(y ~., data = train_data, method = 'anova', control = rpart.control(cp = 0.01, maxdepth = 30))
+rpart_pred = predict(rpart_model,newdata=data.frame(x=solTestXtrans$MolWeight))
+plot(solTestXtrans$MolWeight, rpart_pred, main = 'Regression Tree')
+```
+Random forest
+```{r}
+#mtry does not matter because we have a scalar feature
+rf_model = randomForest(y ~., data= train_data, ntree = 500)
+
+#predict solubility
+rf_pred = predict(rf_model, data.frame(x = solTestXtrans$MolWeight))
+
+#plot
+plot(solTestXtrans$MolWeight, rf_pred, main = 'Random Forest')
+```
+Cubist Model
+```{r}
+cubist_model = cubist(data.frame(x = solTrainXtrans$MolWeight), y = solTrainY, committees = 1)
+
+#predict solubility
+cubist_pred = predict(cubist_model, newdata = data.frame(x = solTestXtrans$MolWeight))
+plot(solTestXtrans$MolWeight, cubist_pred)
+```
+```{r}
+RMSE(lm_pred, solTestY)
+RMSE(rpart_model, solTestY)
+RMSE(cubist_pred, solTestY)
+RMSE(rf_pred, solTestY)
+
+```
+
+From the APM answer key
+```{r}
+soltrainMW = subset(solTrainX, select = 'MolWeight')
+soltestMW = subset(solTestX, select = 'MolWeight')
+
+set.seed(100)
+rpart_tune = train(soltrainMW, solTrainY, method = 'rpart2', tuneLength = 1)
+rpart_test = data.frame(method = 'rpart', Y = solTestY, X = predict(rpart_tune, soltestMW))
+```
+
+Random forest
+```{r}
+rf_tune = train(soltrainMW, solTrainY, method  = 'rf', tuneLength = 1)
+rf_test = data.frame(method = 'rf', Y = solTestY, X = predict(rf_tune, soltestMW))
+```
+
+Cubist with 1 commitee and 1 neighbor
+```{r}
+cubist_tune1 = train(soltrainMW, solTrainY, method = 'cubist', verbose = F, metric = 'Rsquared', tuneGrid = expand.grid(committees = 1, neighbors = 0))
+cubist_test1.0 = data.frame(method = 'cubist', Y = solTestY, X = predict(cubist_tune1, soltestMW))
+```
+
+#5
+
+Fit different tree and rule-based model for the tecator data. How do they compare to linear models? Do the between predictor correlation affect your models? If so how would you transform or re-encode data to mitigate this issue
+```{r}
+data(tecator)
+
+fat = endpoints[,2]
+absorp = data.frame(absorp)
+
+gbm_grid = expand.grid( interaction.depth = seq( 1, 7, by=2 ),
+                       n.trees = seq( 100, 500, by=100 ),
+                       shrinkage = c(0.01, 0.1),
+                       n.minobsinnode = 10 )
+```
+
+Build variosu models then compare the models
+```{r}
+set.seed(0)
+rpart_model = train(absorp, fat, method = 'rpart', preProcess = c('center','scale'), trControl = trainControl(method = 'repeatedcv', repeats = 5))
+
+rf_model = train(absorp, fat, method = 'rf', preProcess = c('center','scale'), trControl = trainControl(method = 'repeatedcv', repeats = 5))
+
+cforest_model = train(absorp, fat, method = 'rf', preProcess = c('center','scale'), trControl = trainControl(method = 'repeatedcv', repeats = 5))
+
+gbm_model = train(absorp, fat, method = 'gbm', preProcess = c('center','scale'),
+                  tuneGrid = gbm_grid, trControl = trainControl(method = 'repeatedcv', repeats = 5), verbose = F)
+```
+```{r}
+resamp = resamples(list(rpart = rpart_model, rf = rf_model, cforest = cforest_model, gbm = gbm_model))
+summary(resamp)
+```
+
+```{r}
+set.seed(1029)
+in_meat_train = createDataPartition(endpoints[,3], p = 3/4, list = F)
+
+absorp_train = absorp[in_meat_train,]
+absorp_tets = absorp[-in_meat_train,]
+protein_train = endpoints[in_meat_train, 3]
+protein_test = endpoints[-in_meat_train, 3]
+
+ctrl = trainControl(method = 'repeatedCV', repeats = 5)
+```
+Simple cart model
+```{r}
+set.seed(529)
+meat_cart = train(x = absorp_train, y = protein_train, method = 'rpart', trControl = ctrl, tuneLength = 25)
+plot(meat_cart)
+```
+Evaluate bagged trees, random forest, gradient boosting, and cubist
+```{r}
+set.seed(529)
+meat_bag = train(x = absorp_train, y = protein_train, method = 'treebag', trControl = ctrl)
+```
+```{r}
+set.seed(529)
+
+meat_rf = train(x = absorp_train, y = protein_train, method = 'rf', ntree = 1500, tuneLength = 10, trControl = ctrl)
+
+gbm_grid = expand.grid( interaction.depth = seq( 1, 7, by=2 ),
+                       n.trees = seq( 100, 500, by=100 ),
+                       shrinkage = c(0.01, 0.1),
+                       n.minobsinnode = 10 )
+
+meat_gbm = train(x = absorp_train, y = protein_train, method = 'gbm', verbose = F, tuneGrid = gbm_grid, trControl = ctrl)
+
+meat_cubist = train(x = absorp_train, y = protein_train, method = 'cubist', verbose = F,
+                    tuneGrid = expand.grid(committees = c(1:10, 20, 50),
+                                           neighbors = c(0, 1, 5, 9)), trControl = ctrl)
+```
+
+
+```{r}
+plot(meat_rf)
+```
+```{r}
+plot(meat_gbm)
+```
+
+```{r}
+plot(meat_cubist)
+```
+To compare performance across models
+```{r}
+meat_resamples = resamples(list(CART = meat_cart, GBM = meat_gbm, Cubist = meat_cubist, 'Random Forest' = meat_rf, 'Bagged tree' = meat_bag))
+(summary(meat_resamples))
+```
+
+#6. 
+Return to the permeability problem. train several tree-based model and evaluate the resmapling and test set performance
+a - Which tree based gives optimal resampling and test set performance
+b - Do any of these models outperform linear and non linear regression models?
+c - of all the models by far, which would you recommend?
+
+```{r}
+data("permeability")
+zero_cols = nearZeroVar(fingerprints)
+length(zero_cols)
+dim(fingerprints)
+fingerprints=  fingerprints[,-zero_cols]
+```
+
+Split the data
+```{r}
+set.seed(614)
+training = createDataPartition(permeability, .8)
+
+#training
+fingerprints_training = fingerprints[training$Resample1, ]
+permeability_training = permeability[training$Resample1]
+
+#testing
+fingerprints_testing = fingerprints[-training$Resample1, ]
+permeability_testing = permeability[-training$Resample1]
+
+str(fingerprints_training)
+str(fingerprints_testing)
+```
+Find optimal parameters for CART, RF, and GBM models
+```{r}
+set.seed(614)
+
+rpart_grid = expand.grid(maxdepth = seq(1,10), by =1)
+rpart_tune = train(x = fingerprints_training, y = permeability_training, method  = 'rpart2', tuneLength =  10, trControl = ctrl)
+
+rf_tune = train(x = fingerprints_training, y = permeability_training, method = 'rf', tuneLength = 10, importance = T, trControl = ctrl)
+
+gbm_grid = expand.grid( interaction.depth = seq( 1, 7, by=2 ),
+                       n.trees = seq( 100, 500, by=100 ),
+                       shrinkage = c(0.01, 0.1),
+                       n.minobsinnode = 10 )
+
+gbm_tune = train(x = fingerprints_training, y = permeability_training, method = 'gbm', verbose = F, tuneGrid = gbm_grid, trControl = ctrl)
+```
+```{r}
+plot(rf_tune)
+```
+```{r}
+library(partykit)
+rpart_tree = as.party(rpart_tune$finalModel)
+plot(rpart_tree)
+```
+```{r}
+varImp(rf_tune, scales = F)
+```
+
+```{r}
+plot(gbm_tune)
+```
+
+
+```{r}
+resamp = resamples(list(CART = rpart_tune, RF = rf_tune, GBM = gbm_tune))
+summary(resamp)
+```
+CART model has close values to RF and is better than GBM due to stability of the data
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,81 @@
+---
+title: "Chap5 - Peformance in regression models"
+author: "Me"
+date: "9/22/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+To compute for model performance, the observed and predicted outcomes should be stored in vectors. FOr regression, vectors should be numeric. Here's an example of manually creating a vector
+```{r}
+observed = c(.22, .83, -.12, .89, -.23, -1.3, -.15, -1.4, 
+             .62, .99, -.18, -.32, .34, -.3, .04, -.87,
+             .55, -1.3, -1.15,.2)
+
+predicted = c(.24, .78, -.66, .53, .7, -.75, -.41, -.43, 
+             .49, .79, -1.19, -.06, .75, -.07, .43, -.42,
+             -.25, -.64, -1.26, -0.7)
+
+resid = observed - predicted
+summary(resid)
+```
+
+An important first step in evaluating the quality of the model is to visualize the results. First, a plot of the observed values against the predicted helps one to understand how the model fits. Also a plot of residuals vs predicted values can help uncover patterns in the model predictions. 
+
+```{r}
+#observed vs predicted
+library(ggplot2)
+
+ggplot(data = NULL, aes(observed, predicted))+
+  geom_point()+
+  geom_abline(slope = 1, intercept = 0)
+```
+Plot the predicted values vs residuals
+```{r}
+plot(predicted, resid)
+abline(h = 0, col = 'darkblue')
+```
+The caret package contains function for calculating RMSe and R2
+
+```{r}
+library(caret)
+R2(predicted, observed)
+RMSE(predicted, observed)
+```
+There are different formulas for R2. The default R2 function uses the square correlation coefficient. Base R contains function to compute correlation including spearman's rank correlation
+```{r}
+#simple cor
+cor(predicted, observed)
+
+#rank correlation
+cor(predicted, observed, method = 'spearman')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

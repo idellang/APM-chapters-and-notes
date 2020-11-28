@@ -1,0 +1,142 @@
+---
+title: "Chap4 - Exercise"
+author: "Me"
+date: "9/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Q1
+
+Consider the music genre data described in sect 1.4. The objective for these data is to use predictors to classify music samples into appropriate music gender.
+A. What splitting method would you use?
+B. Provide code for splitting
+
+```{r}
+library(caret)
+
+#generate some class
+n = 1000
+classes = sample( c(1,2,3), n, replace=TRUE, prob=c(0.7,0.2,0.1) ) 
+head(classes)
+```
+
+Show that our class has correct proportions
+```{r}
+print(table(classes)/n)
+```
+Use createDataPartition
+```{r}
+split = createDataPartition(classes, p= .8)
+str(split)
+```
+
+Verify that we have a stratified sample that matches our prior distribution
+```{r}
+Table = table(classes[split$Resample1])
+Table
+```
+```{r}
+Table/sum(Table)
+```
+Stratified is used because of the imbalance in the proportion of the outcome data. 
+
+#Q3
+Partial least squares was used to model yield of chemical manufacturing process. The data can be found in APM package and can be loaded using
+```{r}
+library(AppliedPredictiveModeling)
+data("ChemicalManufacturingProcess")
+```
+
+The objective of the analysis is to find the number of PLS components that yield the optimal r-squared. PLS models with 1 through 10 components were each evaluated using 5 repeats of 10-fold CV and the results are evaluated in the table
+```{r}
+components = 1:10
+means = c( 0.444, 0.500, 0.533, 0.545, 0.542, 0.537, 0.534, 0.534, 0.520, 0.507 )
+std_errors = c( 0.0272, 0.0298, 0.0302, 0.0308, 0.0322, 0.0327, 0.0333, 0.0330, 0.0326, 0.0324 )
+data = data.frame( components, means, std_errors ) 
+data
+```
+
+a - using one standard error method, what PLS component provides the most parsimonious model
+b - compute the tolerance for this example. IF a 10% loss in R2 is acceptable, what is the optimal PLS
+c - Several other models with varying degrees of complexity were trained and tuned and the results are presented in fig 4.13, if the goal is to select hte model that optimizes  R^2, which model would you use?
+d - Prediction time, as well as model complexity, are other factors to consider when selecting optimal models. Given each model's prediction time, component, R2, which model would you use?
+
+```{r}
+library(tidyverse)
+data %>%
+  filter(means == max(means))
+```
+
+```{r}
+data %>%
+  filter(means  <= (.545 + .0308), means  >= (.545 - .0308))
+```
+Select 3 components for 1 SE
+
+```{r}
+data %>%
+  filter(means  < (.545 + .545*.1), means  > (.545 - .545*.1))
+```
+Select 2 components for 10% 
+
+#Q4
+Develop a methodology for food laboratories to determine the type of oil from a sample. In their procedure, they used a gas chomatograph to measure 7 fatty acids in an oil. These instruments would then be used to predict the type of oil in food samples. To create their model, they used 96 samples and 7 types of oils
+
+These data can be found in the caret package using data(oil). The oil type are stored in the variable oil type.
+```{r}
+library(caret)
+data(oil)
+str(oilType)
+table(oilType)
+```
+a - Use sample function to create a random sample of 60 oils. How closely do frequencies of the random sample match the original samples? Repeat this procedure several times to understand the variation in the sampling process
+b - use the caret package function `createDataPartition` to create stratified random sample. How does this compare to completely random samples
+c - WIth such as small sample size, what are the options for determining the performance of the model? Should a test be used?
+d - One method for understanding the uncertaimty of a test is to use confdence interval for the overall accuracy, the based R function binom.test can be used. It requires the user to input the number of samples and the number of correctly classified. 
+
+For example, suppose a test set sample of 20 oil samples were set aside and 76 were used for model training. For this test set size and a model that is 80% accurate, the confidence interval would be computed using
+```{r}
+binom.test(16,20)
+```
+In this case, the width of confidence interval is 37.9%. Try different sample sizes and accuracy rates to understand tradeoff between the uncertainty in the results and model performance and tes set size.
+
+## Answer
+What is the population frequency of oil types:
+```{r}
+table(oilType)/length(oilType)
+```
+Draw a sample
+```{r}
+a_sample = sample(oilType, 60, replace = T)
+
+#compare its frequency 
+table(a_sample)/length(a_sample)
+```
+Use data partition
+```{r}
+another_sample = createDataPartition(oilType, p = .625)
+table(oilType[another_sample$Resample1])/length(another_sample$Resample1)
+```
+```{r}
+num_correct = 16:20
+width_of_interval = c()
+for( nc in num_correct ){
+  bt_out = binom.test( nc, 20 )
+  width_of_interval = c( width_of_interval, diff( bt_out$conf.int ) )
+}
+
+width_of_interval
+```
+
+
+
+
+
+
+
+
+

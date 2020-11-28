@@ -1,0 +1,290 @@
+---
+title: "Chap14 - Classification trees and rule based models"
+author: "Me"
+date: "10/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Computing
+This section uses functiosn from the ff packages: C50, caret, gmb, ipred, partykit, pROC, randomForest and RWeka. 
+
+In addition to sets of dummy variables, several of categorical predictors are encoded as R factors. When fitting models with independent categories for these predictors, the fullset is used. When treating categorical predictors as cohesive set, an alternate list of predictors contained in the vector `factorPredictors` contain factor version of relevant data. Additionally, the character string factorForm is an R formula created using all predictors in factorPredictors.
+  A good deal of  syntax shown in this section is similar to other computing sections. The focus here will be nuances on individual model functions and interpreting their output.
+  
+  
+```{r}
+load("grantData.RData")
+```
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+## Classification trees
+
+  There are a number of R packages to build single classification trees. The primary package is `rpart`. As discussed in the regression section, the function takes only the formula method for specifying the exact form of the model.
+  There are a large number of predictor for the grant data and as previously mentioned, an R formula was created programmatically to model classes for grouped category. The following syntax fits a cart model to these predictors
+  
+```{r}
+factorForm <- paste("Class ~ ", paste(factorPredictors, collapse = "+"))
+factorForm <- as.formula(factorForm)
+```
+
+```{r}
+library(rpart)
+cart_model = rpart(factorForm, data = training[pre2008,])
+```
+This automatically grows and prunes the tree usign internal CV process. One important argumetn for classification is `parms.` Here, several alterations to the model training process can be declared such as prior probs and type of splitting (either gini or info). These values should be in a list. See ?rpart for details. Also, the `control` argument can customize the fitting procedure in terms of numerical methods such as tree depth. 
+  the model output is somewhat different that regression trees. To show this, we can generate smaller model with two predictions
+```{r}
+rpart(Class ~ NumCI + Weekday, data = training[pre2008,])
+```
+The output shows the split variable/ value, along with how many samples were partitioned into branch. The majority class is also printed (successful for node 2) and the predicted class probs for samples that terminate in this node.
+  Prediction syntax is nearly the same as other models. by default, it produces probabilities. Using `predict(object, type ='class')` generates a factor vector for the winning class
+  
+R implementation of C4.5 is in the RWeka package in a function called J48
+```{r}
+library(RWeka)
+J48(Class ~ NumCI + Weekday, data = training[pre2008,])
+```
+Recall that this implementatio of C4.5 does not attempt to group categories prior to pruning. The prediction automatically predicts winning classes, and the class probs can be obtained using `predict(object, type = 'prob')`
+
+When visualizing CART of J48 trees, the plot function from partykit package can create detailed The objects must be converted to appropriate class using as.party
+```{r}
+library(partykit)
+party_cart = as.party(cart_model)
+plot(party_cart)
+```
+A single C5.0 Tree can be created from the C50 package
+```{r}
+library(C50)
+C5_tree = C5.0(Class ~ NumCI + Weekday, data = training[pre2008,])
+```
+```{r}
+summary(C5_tree)
+```
+Note that, unlike J48, this function is able to split the weekday values from group values. The control function for this model (C5.0Control) turns this feature (subset = F). Other options are avaialble here such as winnowing and confidence factor for splitting. Like J48, the default prediction are classes. type = 'prob' produces probabilities
+
+There are wrappers for these models using the caret function. For example, to fit grouped category model using cart
+```{r}
+library(caret)
+ctrl = trainControl(method = 'LGOCV',
+                    summaryFunction = twoClassSummary,
+                    classProbs = T,
+                    index = list(TrainSet = pre2008),
+                    savePredictions = T)
+```
+```{r}
+rpart_group = train(x = training[,factorPredictors], 
+                    y = training$Class,
+                    method = 'rpart',
+                    metric = 'ROC',
+                    trControl = ctrl)
+plot(as.party(rpart_group$finalModel))
+```
+```{r}
+library(pROC)
+confusionMatrix(rpart_group, norm = 'none')
+roc(response = rpart_group$pred$obs, predictor = rpart_group$pred$successful, levels = rev(levels(rpart_group$pred$obs)))
+```
+
+The main difference here between train and the original model function are a unified interface to the models and the ability to tune models with alternative metrics such as AUC
+
+Note that rpart, C5.0, and j48 use formula method differently than most functions. Usually formula method automatically decomposes any categorical predictors to set of binary dummy variables. The functions respect categorical nature of data and treat these predictors as grouped set. The `train` function follows more convention in R, which is to create dummy variables prior to modeling. This is the main reason why snipper above is written as non_formula method
+
+## Rules
+
+There are several rule-based models in the Rweka package. THe `PART` function creates models based on Frank and WItten 2008. The syntax is similar to J48
+```{r}
+PART(Class ~ NumCI + Weekday, data = training[pre2008,])
+```
+Other Rweka functions for rules can be found on ?Weka_classifier_rules
+
+C5.0 Rules are created using C5.0 function in the same manner as trees but with rules = T option
+```{r}
+C5_rules = C5.0(Class ~ NumCI + Weekday, data = training[pre2008,], rules = T)
+```
+```{r}
+summary(C5_rules)
+```
+Prediction follows the same syntax as above. The variable importance for C5.0 trees and rules are calculated using `C5imp`  or `varImp`. 
+When working with train function, the model codes are C5.0 RUles and PART. 
+
+Other packages for single trees include `party` (conditional inference trees), `tree` (cart trees), `oblique.tree`, 
+```{r}
+C5imp(C5_rules)
+varImp(C5_rules)
+```
+
+## Bagged trees
+
+The primary bagging package is `ipred`. The `bagging` function creates bagged version of `rpart` trees using formula method. (ipredbagg for non formula). The syntax is familiar
+```{r}
+Bagging(Class ~ Weekday + NumCI, data = training[pre2008,])
+```
+The argument nbagg controls how many trees are in the ensemble(25 by default). The default `predict` is class.
+Another function in caret package called `bag` creates bag models more generally.
+
+## Random forest
+The R port of the original random forest is contained in the `randomForest` package and its basic syntax is identical to regression tree. The default value of mtry is sqrt of p is different than regression. One option cutoff is specific to classification and controls the voting cutoff for determining winning class of the ensemble trees. This particular option is also available when using random forest's predict function
+
+The model takes on formula and non formula syntax. In either case, any categorical predictors encoded as R factor are treated as group. The `predict` syntax defaults generating the winning class but the type argument allows for predicting other quantities such as class probs (type = 'prob') and actual vote counts type = 'votes'
+
+A basic example is
+```{r}
+library(randomForest)
+randomForest(Class ~ NumCI + Weekday, data = training[pre2008,])
+```
+
+SInce only two predictors are included, only single predictor is randomly selected at each split. 
+The function prints out OOB estimate as well as analogous confusion matrix. OOB estimates of sensitivity and the false positive rate (i.e 1 - specificity) are shown under column `class.error`
+Other random forest functions such as `cforest` in the party package, `obliqueRF`, `rFerns`(random fern), and RRF (regularized random forest models)
+
+
+## Boosted Trees
+
+The primary boosted tree package in R is `gbm`, which implements stochastic gradient boosting. The primary difference between boosting regression and classification is the distribution of data. gbm can only accomodate two class problem using distribution = 'bernoulli'. Another option is boosting = 'adaboost' to replicate loss function used by that methodology
+
+One complication of using gbm is that it expects outcome is coded as 0,1. As an example
+```{r}
+library(gbm)
+
+forGBM = training
+forGBM$Class = ifelse(forGBM$Class=='successful', 1, 0)
+
+gbm_model = gbm(Class ~ NumCI + Weekday, data = forGBM[pre2008,],
+                distribution = 'bernoulli', interaction.depth = 9,
+                n.trees = 1400, shrinkage = .4,
+                ##this function produces copius amounts of output by default
+                verbose = F)
+```
+The prediction function for this model does not predict the winning class. Using predict(gbm_model, type = 'response') will calculate class probability for the class encoded as 1. This can be converted to a factor variable with the winning class
+```{r}
+gbm_pred=  predict(gbm_model, newdata = head(forGBM[-pre2008,]),
+                   type = 'response', 
+                   ## num of trees must be set
+                   n.trees = 1400)
+gbm_pred
+```
+```{r}
+gbm_class = ifelse(gbm_pred>.5, 'successful', 'unsuccessful')
+gbm_class = factor(gbm_class, levels = levels(training$Class))
+gbm_class
+```
+
+Fitting this model with train simplifies the process considerably. For example, a factor variable can be used as the outcome format (train automatically converts). When predicting winning class, a factor is produced. if the class probs are required then specify `predict(object, type = 'prob')` (trains prediction function automatically uses the number of trees that were found optimal in training)
+
+The original adaboost algo is available in the `ada` package. another function for boosting trees is '`blackboost`' in the mboost package. This package also contains functions for bosoting other types of models (such as logistic regression) as does the `bst` package
+
+to train boosted version of C5.0, the trials argument is used (b/w 1 - 100)
+```{r}
+library(C50)
+C5boost = C5.0(Class ~ NumCI + Weekday, data = training[pre2008,], trials = 10)
+```
+
+By default, the algo has internal tests that assess whether the boosting is effective and will halt the model when diagnoses that it is no longer effective. This feature can be negated using
+'C5.0Control(earlyStopping = F).'
+
+These models can be tuned using method values 'gbm', 'ada', or C5.0
+
+```{r}
+load("grantData.RData")
+library(caret)
+```
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+
+##basic trees
+```{r}
+ctrl = trainControl(method = 'LGOCV', summaryFunction = twoClassSummary, 
+                    classProbs = T, index = list(TrainSet = pre2008), 
+                    savePredictions = T)
+```
+
+```{r}
+set.seed(476)
+rpart_fit = train(x = training[,predictors], y = training$Class,
+                  method = 'rpart',
+                  tuneLength = 30,
+                  metric= 'ROC',
+                  trControl = ctrl)
+rpart_fit
+```
+```{r}
+library(partykit)
+plot(as.party(rpart_fit$finalModel))
+```
+```{r}
+library(pROC)
+rpart_2008 = merge(rpart_fit$pred, rpart_fit$bestTune)
+rpart_cm = confusionMatrix(rpart_fit, norm = 'none')
+rpart_roc = roc(response = rpart_fit$pred$obs,
+                predictor = rpart_fit$pred$successful, 
+                levels = rev(levels(rpart_fit$pred$obs)))
+plot(rpart_roc, type = 's', print.thresh = c(.5), 
+     print.thres.pch = 16, legacy.axes = T, 
+     print.threh.pattern = '')
+```
+
+#J48
+```{r}
+set.seed(476)
+J48_factor_fit = train(x = training[,predictors], y = training$Class,
+                  method = 'J48',
+                  metric= 'ROC',
+                  trControl = ctrl)
+J48_factor_fit
+```
+```{r}
+j48_2008 = merge(J48_factor_fit$pred, J48_factor_fit$bestTune)
+j48_cm = confusionMatrix(J48_factor_fit, norm = 'none')
+```
+## Rule based models
+```{r}
+set.seed(476)
+part_fit = train(x = training[,predictors], y = training$Class, 
+                 method = 'PART', metric = 'ROC', trControl = ctrl)
+part_fit
+```
+```{r}
+part_cm = confusionMatrix(part_fit, norm = 'none')
+part_roc = roc(response = part_fit$pred$obs, 
+               predictor = part_fit$pred$successful, 
+               levels = rev(levels(part_fit$pred$obs)))
+```
+
+## Bagged trees
+```{r}
+set.seed(476)
+treebag_fit = train(x = training[,predictors], y = training$Class,
+                  method = 'treebag',
+                  nbagg = 50,
+                  metric= 'ROC',
+                  trControl = ctrl)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

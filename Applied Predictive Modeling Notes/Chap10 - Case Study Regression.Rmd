@@ -1,0 +1,324 @@
+---
+title: 'Chap 10 - Case Study: Compressive strengt of mixtures'
+author: "Me"
+date: "10/1/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+## Computing
+
+This section uses functions from caret, desirability, Hmisc, and plyr packages.
+
+The concrete data can be found in UCI machine learning repository. The appliedpredictivemodeling package contains the original data (in amounts) and alternate version that has mixture proportions
+
+```{r}
+library(AppliedPredictiveModeling)
+data("concrete")
+library(caret)
+```
+```{r}
+str(concrete)
+str(mixtures)
+```
+Table 10.1 was created using describe function
+```{r}
+library(Hmisc)
+describe(concrete)
+```
+
+Figure 10.1 was created using feature plot in the caret pacakge
+```{r}
+featurePlot(concrete[,-9], concrete$CompressiveStrength, type = c('g','p','smooth'), between = list(x = 1, y = 1))
+```
+
+
+There are replicated mixtures so take the average per mixture 
+```{r}
+averaged = ddply(mixtures, .(Cement, BlastFurnaceSlag, FlyAsh, Water, 
+                    Superplasticizer, CoarseAggregate, 
+                    FineAggregate, Age),
+                  function(x) c(CompressiveStrength = 
+                    mean(x$CompressiveStrength)))
+
+head(averaged)
+```
+
+Split the data and create control object
+
+Each model has 10-fold cross validation
+```{r}
+set.seed(975)
+in_train = createDataPartition(averaged$CompressiveStrength, p = 3/4)$Resample
+
+training = averaged[in_train,]
+testing = averaged[-in_train,]
+
+ctrl = trainControl(method = 'repeatedcv', repeats = 5)
+```
+
+Create a model formula that be used repeatedly
+
+To fit linear models with the expanded set of predictors, such as interactions, the specific  forumla was created above. The . is shorthand for all predictors and (.)^2 expands into a model with all linear terms and all two-factor interactions. The quadratig are created manually using I() telling R that squaring predictors should be done arithmetically
+```{r}
+mod_form <- paste("CompressiveStrength ~ (.)^2 + I(Cement^2) + I(BlastFurnaceSlag^2) +",
+                 "I(FlyAsh^2)  + I(Water^2) + I(Superplasticizer^2)  +",
+                 "I(CoarseAggregate^2) +  I(FineAggregate^2) + I(Age^2)")
+
+
+mod_form = as.formula(mod_form)
+```
+
+
+To fit linear regression
+
+```{r}
+library(caret)
+set.seed(669)
+lm_fit = train(mod_form, data = training, method = 'lm', trControl = ctrl)
+lm_fit
+
+```
+Other two linear models are created as follows
+
+```{r}
+pls_fit = train(mod_form, data = training, method = 'pls', preProc = c('center','scale'), tuneLength = 15, trControl = ctrl)
+pls_fit
+plot(pls_fit)
+```
+
+```{r}
+lasso_grid = expand.grid(lambda = c(0, 0.001, .01, .1), fraction = seq(.05, 1, length = 10))
+lasso_fit = train(mod_form, data = training, method = 'enet', preProc = c('center','scale'), tuneGrid = lasso_grid, trControl = ctrl)
+```
+
+MARS, neural networks, and SVMS are created as follows
+
+```{r}
+set.seed(669)
+earth_fit = train(CompressiveStrength ~. , data = training, method = 'earth', tuneGrid = expand.grid(degree = 1, nprune = 2:25), trControl = ctrl)
+plot(earth_fit)
+```
+
+```{r}
+set.seed(669)
+svmR_fit = train(CompressiveStrength ~., data = training, method = 'svmRadial', preProc = c('center','scale'), trControl = ctrl)
+```
+
+```{r}
+nnet_grid = expand.grid(decay = c(0.001, .01, .1), 
+                        size = seq(1, 17, by = 2))
+
+set.seed(669)
+nnet_fit = train(CompressiveStrength ~ . , data = training, method = 'nnet', tuneGrid = nnet_grid, preProc = c('center','scale'), 
+                 linout = T, trace = F, maxit = 500, allowParallel = F, trControl = ctrl)
+```
+Regression and model trees were similarly created
+```{r}
+set.seed(669)
+rpart_fit = train(CompressiveStrength ~ .,
+                  data = training,
+                  method = "rpart",
+                  tuneLength = 30,
+                  trControl = ctrl)
+rpart_fit
+```
+
+```{r}
+set.seed(669)
+treebag_fit = train(CompressiveStrength ~ .,
+                    data = training,
+                    method = "treebag",
+                    trControl = ctrl)
+treebag_fit
+```
+
+```{r}
+set.seed(669)
+ctree_fit = train(CompressiveStrength ~ ., data = training, method = 'ctree', tuneLength = 10, trControl = ctrl)
+```
+
+```{r}
+set.seed(669)
+rf_fit = train(CompressiveStrength ~ ., data = training, method = 'rf', tuneLength = 10, ntrees = 1000, importance= T, trControl = ctrl)
+```
+
+```{r}
+gbm_grid = expand.grid(interaction.depth = seq(1, 7, by = 2),
+                       n.trees = seq(100, 1000, by = 100),
+                       shrinkage = c(0.01, 0.1), n.minobsinnode = 10)
+
+set.seed(669)
+gbm_fit = train(CompressiveStrength ~ ., data = training, method = 'gbm', tuneGrid = gbm_grid, verbose = F, trControl = ctrl)
+```
+
+```{r}
+cb_grid = expand.grid(committees = c(1, 5, 10, 50, 75), 
+                      neighbors = c(0, 1, 3, 5, 7))
+
+set.seed(669)
+cb_fit = train(CompressiveStrength ~ ., data = training, method = 'cubist', tuneGrid = cb_grid, trControl = ctrl)
+```
+
+```{r}
+set.seed(669)
+mt_fit = train(CompressiveStrength ~ ., data = training, method = 'M5', trControl = ctrl)
+```
+
+The resampling results for these models were collected into single object using caret's resamples function. This object can be used for visaluzations or to make formal comparisons between the models
+
+```{r}
+resamp = resamples(list('Linear reg' = lm_fit, PLS = pls_fit, Enet = lasso_fit, MARS = earth_fit, SVM = svmR_fit, 'Neural Networks' = nnet_fit, 
+                        CART = rpart_fit, 'Cond Inf Tree' = ctree_fit, 'Bagged Tree' = treebag_fit, 'Boosted Tree' = gbm_fit, 'Random Forest'= rf_fit, 
+                        Cubist = cb_fit, M5  = mt_fit))
+
+summary(resamp)
+```
+
+```{r}
+parallelplot(resamp, metric = 'RMSE')
+```
+```{r}
+parallelplot(resamp, metric = 'Rsquared')
+```
+
+From here, boosted tree has the best fit
+
+The test predictions are achieved using a simple application of predict
+```{r}
+nnet_preds = predict(nnet_fit, testing)
+gbm_preds = predict(gbm_fit, testing)
+cb_preds = predict(cb_fit, testing)
+rf_fit = predict(rf_fit, testing)
+lm_preds = predict(lm_fit, testing)
+```
+
+```{r}
+RMSE(nnet_preds, testing$CompressiveStrength)
+R2(nnet_preds, testing$CompressiveStrength)
+
+RMSE(gbm_preds, testing$CompressiveStrength)
+R2(gbm_preds, testing$CompressiveStrength)
+
+RMSE(cb_preds, testing$CompressiveStrength)
+R2(cb_preds, testing$CompressiveStrength)
+
+RMSE(rf_fit, testing$CompressiveStrength)
+R2(rf_fit, testing$CompressiveStrength)
+
+RMSE(lm_preds, testing$CompressiveStrength)
+R2(lm_preds, testing$CompressiveStrength)
+```
+
+To predict optimal mixtures, we first use 28-day data to generate a set of random starting points. 
+Since distances between formulations will be used as a measure of dissimilarity, the data are pre-processed to have same mean and variance for each predictor. After this, a single random mixture is selected to initialize the maximum dissimilarity
+
+```{r}
+age28_data = subset(training, Age == 28)
+
+#remove age and compressive strength columns and then center and scale
+pp1 = preProcess(age28_data[, -(8:9)], c('center','scale'))
+scaled_train = predict(pp1, age28_data[,1:7])
+```
+
+```{r}
+set.seed(91)
+start_mixture = sample(1:nrow(age28_data),1)
+starters = scaled_train[start_mixture,1:7]
+```
+
+After this, the maximum dissimilarity sampling method from sect 4.3 selects 14 more mixtures to complete diverse set of starting points for each algorithm
+```{r}
+pool = scaled_train
+index = maxDissim(starters, pool, 14)
+start_points = c(start_mixture, index)
+starters = age28_data[start_points, 1:7]
+```
+
+Since all seven mixtures proportions should add to one, the search procedures will conduct search without one ingredient (water), and the water proprotion will be determined by the sum of other six ingredients proportions. Without this step, the search procedures would pick candidate mixture that would not add to 1
+```{r}
+##remove water
+start_values = starters[,-4]
+```
+
+To maximize compressive strength, R function `optim` searches mixture space for optimal formulations. A custom R function is needed to translate a candidate mixture to a prediction. This function can find settings that minimize a function, so it will return the negative of the compressive strength. The function below checks to make sure that the proportions are between 0 to 1 and proportion of water does not fall below 5%. If these conditions are violated, the function returns a large positive number which the search procedure will avoid
+```{r}
+model_prediction = function(x, mod){
+  ##check to make sure mixture proportions are in correct range
+  if(x[1] < 0 | x[1] > 1) return(10^38)
+  if(x[2] < 0 | x[2] > 1) return(10^38)
+  if(x[3] < 0 | x[3] > 1) return(10^38)
+  if(x[4] < 0 | x[4] > 1) return(10^38)
+  if(x[5] < 0 | x[5] > 1) return(10^38)
+  if(x[6] < 0 | x[6] > 1) return(10^38)
+  
+  ## determine water proportion
+  
+  x = c(x, 1 - sum(x))
+  
+  #check water range
+  if(x[7] < .05) return(10^38)
+  
+  ##convert vector to a dataframe and assign names and fix age at 28 days
+  tmp = as.data.frame(t(x))
+  names(tmp) = c('Cement','BlastFurnaceSlag','FlyAsh',
+                  'Superplasticizer','CoarseAggregate',
+                  'FineAggregate', 'Water')
+  tmp$Age = 28
+  
+  #get the model prediction, square them to get back to the original units, then return negative of teh result
+  -predict(mod, tmp)
+}
+```
+
+First the cubist model is used
+```{r}
+cb_results = start_values
+cb_results$Water = NA
+cb_results$Prediction = NA
+
+for (i in 1:nrow(cb_results)){
+  
+  results = optim(unlist(cb_results[i, 1:6]), model_prediction, method = 'Nelder-Mead', control = list(maxit = 5000), mod = cb_fit)
+  
+  ##save predicted compressive strength
+  cb_results$Prediction[i] = -results$value
+  
+  #also save fianl mixture values
+  cb_results[i,1:6] = results$par
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

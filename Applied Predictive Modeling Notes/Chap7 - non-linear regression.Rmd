@@ -1,0 +1,173 @@
+---
+title: "Chap7 - Nonlinear regression models"
+author: "Me"
+date: "9/24/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Computing
+
+This section will reference functions from caret, earth, kernlab, and nnet packages. 
+R has a number of packages and functions for creating neural networks. Relevant packages include nnet, neural, and RSNNS. the nnet package is the focus here since it supports basic neural network outlined in the chapter and has simple syntax. RSNNS supports a wide array of neural networks
+
+### Neural networks
+
+To fit a regression model, the nnet function takes both formula and non formula interfaces. For regression, the linear relationship between hidden units and and the prediction can be used with the option `linout = T`. A basic neural network function call would be
+```{r}
+nnet_fit = nnet(predictors, outcome, size = 5, decay = 0.01, linout = T,
+                #reduce the amount of printed output
+                trace = F,
+                # expand number of iterations
+                maxit = 500,
+                ## and the number of parameters used in the model
+                MaxNWts = 5 *(ncol(predictors)+1) + 5 + 1)
+```
+The equation above will create a single model with 5 hidden units. Note, this assumes that the data have been standardized and on the same scale. To use model averaging, the avNNet function in the caret package has identical syntax
+```{r}
+nnetAvg = avNNet(predictors, outcome, size = 5, decay = .01, 
+                 ## specify how many models to average
+                 repeats = 5, linout= T,
+                 ## reduce amount of printed outputs
+                 trace = F, 
+                 ## expand iterations
+                 maxit = 500,
+                 ## and the number of parameters
+                 MaxNWts = 5 * (ncol(predictors)+1) + 5 + 1)
+```
+
+To predict samples
+predict(nnet_fit, newdata) or predict(nnetAvg, newdata)
+
+To mimic the earlier approach of choosing the number of hidden units and amount of weight decay via resampling, the `train` function can be applied either using method = 'nnet' or method = 'avNNET'. First we remove predictors to ensure that maximum absolute pairwise correlation is less than .75
+
+```{r}
+library(caret)
+library(AppliedPredictiveModeling)
+data(solubility)
+too_high = findCorrelation(cor(solTrainXtrans), cutoff = .75)
+trainx_nnet = solTrainXtrans[,-too_high]
+testx_nnet = solTestXtrans[,-too_high]
+
+set.seed(100)
+indx = createFolds(solTrainY, returnTrain = T)
+ctrl = trainControl(method = 'cv', index = indx)
+```
+
+Create grid and model
+```{r}
+nnet_grid = expand.grid(.decay = c(0, .01, .1), 
+                        .size = c(1:5),
+                        ##set bagging option
+                        .bag = F)
+```
+
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+
+set.seed(100)
+nnet_tune = train(solTrainXtrans, solTrainY, method = 'avNNet', tuneGrid = nnet_grid, trControl = ctrl,
+                  ## standardize data prior to modeling
+                  preProc = c('center','scale'), 
+                  linout = T,
+                  trace = F,
+                  MaxNWts = 10 * (ncol(trainx_nnet)+1) + 10 + 1,
+                  maxit = 500)
+```
+
+
+## Multivariate regression spline
+
+MARS models are in several packages, but the most extensive implementation is in the earth package. The MARS model using nominal forward pass and pruning step can be simply called
+```{r}
+library(earth)
+mars_fit = earth(solTrainXtrans, solTrainY)
+mars_fit
+```
+Note that since this model used the internal GCV technique for model selection, the details of this model are different than the one used previously. The summary method generates more extensive output
+```{r}
+summary(mars_fit)
+```
+
+h is the hinge function. In the output above, the term h(Molweight - 5.77) is 0 when molecular weight is less than 5.77. The plotmo function of the earth package can be used to produce plots similar to the book. 
+```{r}
+plotmo(mars_fit)
+```
+
+To tune the model using external resampling, the train function can be used
+```{r}
+#define the grid
+mars_grid = expand.grid(.degree = 1:2, .nprune = 2:38)
+set.seed(100)
+mars_tune = train(solTrainXtrans, solTrainY, method = 'earth', tuneGrid = mars_grid, trControl = trainControl(method = 'cv'))
+mars_tune
+```
+```{r}
+head(predict(mars_tune, solTestXtrans))
+```
+Use `varImp` to show variable importance
+```{r}
+varImp(mars_tune)
+```
+
+```{r}
+mars_imp = varImp(mars_tune, scale = F)
+plot(mars_imp, top = 25)
+```
+## Support vector machines
+There are a number of R packages with implementations of support vector machine models. The `svm` function in the e1071 package has an interface to LIBSVM library for regression. A more comprehensive implementation of SVM models for regression is the kernlab package. In that package, ksvm function is available for regression models and a large number of kernel functions, The radial basis function is the default kernel function. If appropriate values of the cost and kernel paremeter are known, this model can be fit as
+```{r}
+library(kernlab)
+data = solTrainXtrans
+data$SolTrainY = solTrainY
+
+svm_fit = ksvm(x = solTrainXtrans, y = solTrainY, 
+               kernel = 'rbfdot', kpar = 'automatic', 
+               C = 1, epsilon = .1)
+```
+Use formula style to fix. 
+
+The function automatically uses analytical approach to estimate sigma. Since y is a numeric vector, the function knows to fit a regression model (instead of classification model). Other kernel functions can be used including kernel = 'polydot', and linear (kernel = 'vanilladot')
+if the values are unknown, they can be estimated thru resampling method, the method values of 'svmRadial', 'svmLinear', 'svmPoly' fits different kernels
+
+The tuneLength argument will use the default grid search of 14 cost values. Again, sigma is estimated analytically by default
+```{r}
+svm_tune = train(solTrainXtrans, solTrainY, method = 'svmRadial', preProc = c('center','scale'), tuneLength = 14, trControl = trainControl(method = 'cv'))
+svm_tune
+```
+```{r}
+plot(svm_tune, scales = list(x = list(log = 2)))
+```
+The subobject named finalModel contains the model created by the kvsm function
+```{r}
+svm_tune$finalModel
+```
+Here we see that the model used 634 training set data points as support vectors. kernlab has implementation of RVM model for regression in the function `rvm`. Syntax is very similar to `ksvm`
+
+## KNN
+
+The `knnreg` function in the caret package fits the KNN regression model. train tunes the model over K
+```{r}
+#remove sparse and imbalance fingerprints
+knn_descr = solTrainXtrans[, - nearZeroVar(solTrainXtrans)]
+set.seed(100)
+knn_tune = train(knn_descr, solTrainY, method = 'knn', preProcess = c('center','scale'), 
+                 tuneGrid = data.frame(.k = 1:20), trControl = trainControl(method ='cv'))
+knn_tune
+```
+```{r}
+plot(knn_tune)
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,148 @@
+---
+title: "Chap18 - Exercise"
+author: "Me"
+date: "10/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#2 
+For oil data
+estimate variable importance scores. Does large number of classes affect process of qualifying importance
+
+
+```{r}
+library(caret)
+```
+
+Get matrix correlation and p values
+```{r}
+cor.prob = function(X, dfr=nrow(X)-2){
+    R = cor(X)
+    above = row(R) = col(R)
+    r2 = R[above]^2
+    Fstat = r2 * dfr/(1 - r2)
+    R[above] = 1 - pf(Fstat, 1, dfr)
+    R[row(R) == col(R)] = NA
+    R
+}
+```
+
+Extract largest cor
+```{r}
+largest_cors = function(X){
+    pred_cors = cor( X )
+
+    # Convert the matrix above into a dataframe with an entry for each element of the correlation matrix:
+    cor_DF = data.frame( first_variable=rep(rownames(pred_cors),ncol(pred_cors)),
+                         second_variable=rep(colnames(pred_cors),each=nrow(pred_cors)),
+                         cor=as.vector(pred_cors) )
+
+    upper_mask = as.vector(upper.tri(pred_cors)) # which elements are on the upper triangular (to avoid duplicates)
+
+    # Order these pairwise-correlation by their absolute correlation:
+    #
+    pairwise_cor = cor_DF[upper_mask,]
+    pairwise_cor$abs_cor = abs(pairwise_cor$cor)
+    pairwise_cor = pairwise_cor[ order( pairwise_cor$abs_cor, decreasing=TRUE ), ]
+    pairwise_cor$abs_cor = NULL
+    pairwise_cor
+}
+```
+
+
+```{r}
+library(AppliedPredictiveModeling)
+library(C50)
+library(CORElearn)
+```
+
+```{r}
+data(oil)
+filterVarImp(fattyAcids, oilType)
+```
+
+try second method
+```{r}
+DF = cbind(fattyAcids, oilType)
+
+relief_values = attrEval(oilType ~., data = DF, estimator = 'ReliefFequalK', ReliefIterations = 50)
+```
+#3 
+```{r}
+data(abalone)
+str(abalone)
+```
+
+Data consists of measurements of type(male, female, infant), longest shell measurement, the diameter, height, several weights. Outcome is the number of rings.
+```{r}
+head(abalone)
+```
+
+a - plot the data to assess relationships between predictors and outcome
+b - use scatterplots and correlation to understand how predictors relate to one another
+c - estimate variable importance. Develop an approach to determine reduced set of nonredundant predictors
+d - apply PCa to continous to determine how many distinct info are in the data
+
+```{r}
+cn = colnames(abalone)
+
+for(ci in 2:8){
+  plot(abalone[,ci], abalone$Rings, main = cn[ci])
+  cat('Press enter to continue')
+  line = readline()
+}
+```
+
+#Save scatterplots that look interesting
+
+Height vs rings
+```{r}
+par(mfrow = c(1,2))
+plot(Rings ~ Height, data = abalone)
+orig_limits = par("usr")
+m_orig = lm( Rings ~ Height, data=abalone )
+abline(m_orig)
+grid()
+```
+
+
+```{r}
+largest_cors(abalone[,-1])
+```
+
+```{r}
+findCorrelation(cor(abalone[,-1]), cutoff = .75)
+```
+Assess importance
+```{r}
+VI = filterVarImp( abalone[,1:(dim(abalone)[2]-1)], abalone[,dim(abalone)[2]] )
+```
+Try another method
+```{r}
+reliefvalues = attrEval( Rings ~ ., data=abalone[,-1], estimator="RReliefFequalK" )
+```
+Apply PCA to continuous data
+```{r}
+pca_out = prcomp( abalone[,-1], center=T, scale=T )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

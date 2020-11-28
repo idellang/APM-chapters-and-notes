@@ -1,0 +1,214 @@
+---
+title: "Chap4 - Overfitting and model tuning"
+author: "Me"
+date: "9/5/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Computing
+
+the following sections will referene functions from APM, caret, Design, e1071, ipred, and MASS
+
+## Data Splitting
+
+```{r}
+library(AppliedPredictiveModeling)
+data(twoClassData)
+```
+Predictors and outcomes are shown below
+```{r}
+str(predictors)
+str(classes)
+```
+The base R function sample can create simple random splits of the data. To create stratified random splits, the `createDataPartition` can be used. The percent of data that will be allocated to training set should be specified
+```{r}
+library(caret)
+set.seed(1)
+
+#by default, numbers are returned as list. Use list = F
+training_rows = createDataPartition(classes, p = .8, list = F)
+head(training_rows)
+```
+
+Subset data into objects for training user integer subsetting
+```{r}
+#train
+train_predictors = predictors[training_rows, ]
+train_classes = classes[training_rows]
+
+#test
+test_predictors = predictors[-training_rows, ]
+test_classes = classes[-training_rows]
+
+str(train_predictors)
+str(test_predictors)
+```
+To generate a test using maximimum dissimilarity sampling. the caret function `maxdissim` can be used to sample the data.
+
+## Resampling
+
+The caret package has various functions for data splitting. For example, to use repeated training/test splits, the function `createDataPartition` could be used again with an additional argument `times` to generate multiple splits.
+```{r}
+set.seed(1)
+
+repeated_splits = createDataPartition(train_classes, p = .8, times = 4)
+str(repeated_splits)
+```
+
+Similarly the caret package has function `createResamples` for bootstrapping, `createFolds` for k-old cross validation, and `createMultifolds` for repeated cross validation. To indicate for 10-fold CV
+```{r}
+set.seed(1)
+cv_splits = createFolds(train_classes, k = 10, returnTrain = T)
+str(cv_splits)
+```
+Get the first row of numbers from the list
+```{r}
+fold1 = cv_splits[[1]]
+length(fold1)
+```
+To get the 90% of the data (first fold):
+```{r}
+#subset
+cv_predictors1 = train_predictors[fold1,]
+cv_classes1 = train_classes[fold1]
+
+nrow(train_predictors)
+nrow(cv_predictors1)
+```
+# Basic Model Building in R
+Now that we have training sets and test sets, we could fit a 5-nearest neighbor classification model to the training data and use it to predict the test set. There are multiple R functions to do this: the `knn` function in the MASS package, the `ipredknn` in the ipred package and the `knn3` in caret. the knn3 function can produce class predictions as well as the proportion of neighbors of each class
+
+There are two main conventions for specifying models in R: the formula interface and the non formula or matrix interface. 
+The formula below
+`modelFunction(price ~ numbedrooms + numbaths + acres, data = HousingData)`
+would predict price of house using 3 characteristics
+
+You can also use log transformation in the formula. Unfortunately,R does not efficiently store the information about the formula. Using this interface with datasets that contain a large number of predictors may unnecessary slow the computations
+
+The non formula interface specifies the predictors for the model using a matrix or dataframe. The outcome data are usually passed into the model as vector object
+`modelFunction(x = housePredictors, y = Price)`
+
+Not all functions in R have both interfaces
+
+For knn3, we can estimate 5-nearest neighbors with 
+```{r}
+train_predictors = as.matrix(train_predictors)
+knn_fit = knn3(x = train_predictors, y = train_classes, k = 5)
+knn_fit
+```
+Knn3 object is ready to predict new samples. The standard convention is
+```{r}
+test_pred = predict(knn_fit, newdata = test_predictors, type = 'class')
+str(test_pred)
+```
+
+
+
+## Determination of tuning parameter
+
+To choose tuning parameters using resampling, sets of candidate values are evaluated using different resamples of the data. A profile can be created to understand the relationship between performance and the parameter values. R has several functions for this task. `e1071` package has `tune` function which can evaluate four types of models across range of parameters. The `errorest` function in the ipred package can resample single models. The `train` function in the caret package has built in modules for 144 models and includes capabilities for different resampling methods, performance measures, and algorithm choosing the best model from the profile. This function also has capabilities for paralle computing so that the resampled model fits can be executed across multiple computers or processors. Our focus will be the `train` function
+
+in the SVM example, gamma is tuned using resampling methods. `train` function of caret estimates the kernel parameter. To tune an SVM model using the credit training set samples, the `train` function can be used. Both the training set predictors and outcome are contained in data GermanCreditTrain
+
+```{r}
+library(caret)
+data("GermanCredit")
+```
+
+Get germancredittrain and test from APM
+```{r}
+GermanCredit <- GermanCredit[, -nearZeroVar(GermanCredit)]
+GermanCredit$CheckingAccountStatus.lt.0 <- NULL
+GermanCredit$SavingsAccountBonds.lt.100 <- NULL
+GermanCredit$EmploymentDuration.lt.1 <- NULL
+GermanCredit$EmploymentDuration.Unemployed <- NULL
+GermanCredit$Personal.Male.Married.Widowed <- NULL
+GermanCredit$Property.Unknown <- NULL
+GermanCredit$Housing.ForFree <- NULL
+
+## Split the data into training (80%) and test sets (20%)
+set.seed(100)
+inTrain <- createDataPartition(GermanCredit$Class, p = .8)[[1]]
+GermanCreditTrain <- GermanCredit[ inTrain, ]
+GermanCreditTest  <- GermanCredit[-inTrain, ]
+```
+
+
+We will use all the predictors to model the outcome. 
+```{r}
+library(tidyverse)
+library(kernlab)
+
+svmFit = train(Class ~., data = GermanCreditTrain, method = 'svmRadial')
+```
+
+However, we would like to tailor the computations by overriding several default values. First, we would like to pre-process the predictor data by centering and scaling. We can use `preProc` argument can be used
+```{r}
+set.seed(1056)
+svmFit = train(Class ~., data = GermanCreditTrain, method = 'svmRadial', preProc = c('center','scale'))
+```
+
+Also for this function, the user can specify the exact cost of values to investigate. In addition, the function has algorithms to determine reasonable values for many models. Using the option `tuneLength = 10`, the cost values $2^-2$ to $2^7$  are evaluated
+```{r}
+svm_fit = train(Class ~., data= GermanCreditTrain, method = 'svmRadial', preProc = c('center','scale'), tuneLength = 10)
+```
+
+By default, the basic bootstrap will be used to calculate performance measures. Repeated 10-fold CV can be specified with `trainControl`
+```{r}
+set.seed(1056)
+svm_fit = train(Class ~., data = GermanCreditTrain, method = 'svmRadial', tuneLength = 10, c('center','scale'),
+                trControl = trainControl(method = 'repeatedcv', repeats = 5))
+```
+
+```{r}
+svm_fit
+```
+Using a pick the best approach, a final model was fit to all 800 training set samples with sigma value of .0202 and cost value of 4. The plot method can be used to visualize the performance profile. 
+```{r}
+plot(svm_fit, scales = list(x = list(log = 2)))
+```
+To predict new samples, the predict method is called
+```{r}
+pred_classes = predict(svm_fit, GermanCreditTest)
+str(pred_classes)
+table(pred_classes, GermanCreditTest$Class)
+```
+Use the type option to get the class probabilities
+```{r}
+pred_probs = predict(svm_fit, newdata = GermanCreditTest, type = 'prob')
+```
+There are other R packages that can estimate performance via resampling. The `validate` function in the `Design` package and `errorest` in the ipred package can be used to estimate model performance with a single candidate set of tuning parameters. The `tune` function of e1071 package can also determine parameter settings using resampling
+
+## Between model comparisons
+
+While logistic has no tuning parameters, resampling can still be used to characterize the performance of the model. The `train` function is used once again, with different method `glm` (for generalized linear models). 
+```{r}
+set.seed(1056)
+logistic_reg = train(Class ~., data = GermanCreditTrain, method = 'glm', trControl = trainControl(method = 'repeatedcv', repeats = 5))
+logistic_reg
+```
+To compare the two models based on their CV statistics, the `resamples` function can be used with models that share common set of resampled datasets. Since the random number seed was initialized prior to running the SVM and logistic models, paired accuracy measurements exists for each dataset. First we create a `resamples` object from the models
+```{r}
+resamp = resamples(list(SVM = svm_fit, Logistic = logistic_reg))
+resamp
+summary(resamp)
+```
+Na column corresponds to cases where resampled models failed. The `resamples` class has several methods for visualizing paired values. To assesss possible differences between the `diff` method is used
+```{r}
+model_diff = diff(resamp)
+summary(model_diff)
+```
+p value are large (.03 and .09 for accuracy and kappa). Can say that there is minimal difference between the two
+
+
+
+
+
+
+
+

@@ -1,0 +1,288 @@
+---
+title: "Chap6 - Exercise"
+author: "Me"
+date: "9/23/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+##1 
+Infrared IR spectroscopy is used to determine chemical makeup of a substance. The theory of IR spectroscopy holds that unique molecular structures absorb IR frequencies differently. In practice, a spectrometer fires series of IR frequencies into a sample material, and the device measures the absorbance of the sample at each individual frequency. This series of measurements creates a spectrum of profile which then can be used to determine chemical makeup of the sample material
+
+A tecator infratec food and feed analyzer instrument was used to analyze 215 samples of meat across 100 frequencies. In addition to IR profile, analytical chemistry determined the percent of content of water, fat ,and protein for each sample. If we establish a predictive relationship between IR spectrum and fat content, then food scientists could predict a sample's fat content with IR instead of using analytical chemistry. This would provide costs savings since analytical chemistry is more time consuming
+```{r}
+library(AppliedPredictiveModeling)
+library(caret)
+data(tecator)
+```
+The matrix absorb contains 100 absorbance values for 215 samples while matrix end points contains the percent of moisture, fat, protein in columns 1-3
+
+b - in this example, the predictors are measurements at the individual frequencies. Because frequencies lie in a systematic order, the predictors have high degree of correlation. Hen,ce the data lie in a smaller dimension than the total number of predictors. use PCa to determine the effective dimension.
+c- split the data into training and test set, preprocess the data and build variety of models. What are the optimal tuning parameters for those models?
+d - which model has the best predictive ability?
+e - explain which model would you use in predicting the fat content of the sample
+```{r}
+pr = prcomp(absorp)
+
+vars = pr$sdev^2
+total_var = sum(vars)
+
+plot(1:length(vars), vars/total_var, type = 'b')
+```
+Fittig different models
+```{r}
+fat = endpoints[,2]
+absorp = data.frame(absorp)
+
+ctrl = trainControl(method="repeatedcv",repeats=5) 
+#build various models
+set.seed(0)
+lm_model = train(absorp, fat, method = 'lm', preProc = c('center','scale'), trControl = ctrl)
+lm_model
+```
+For rlm we cannot have a singular predicto covariance matrix so we preprocess with PCA
+```{r}
+rlm_model = train(absorp, fat, method = 'rlm', preProc = c('pca'), trControl = ctrl)
+```
+
+
+```{r}
+set.seed(0)
+pls_model = train(absorp, fat, method = 'pls', tuneLength = 40, preProc = c('center','scale'), trControl = ctrl)
+pls_model
+```
+Ridge regresion
+```{r}
+ridge_grid = data.frame(.lambda = seq(0,1, length = 20))
+set.seed(0)
+ridge_model = train(absorp, fat, method = 'ridge', tuneGrid = ridge_grid, preProc = c('center','scale'), trControl = ctrl)
+ridge_model
+```
+
+Elastic net
+```{r}
+enet_grid = expand.grid(.lambda = seq(0,1, length = 10), .fraction = seq(0.05, 1, length = 10))
+set.seed(0)
+enet_model = train(absorp, fat, method = 'enet', tuneGrid = enet_grid, preProc = c('center','scale'), trControl = ctrl)
+enet_model
+```
+
+```{r}
+resamp = resamples(list(lm = lm_model, rlm = rlm_model, ridge = ridge_model, pls = pls_model, enet = enet_model))
+summary(resamp)
+```
+```{r}
+diff(resamp)
+```
+## 2
+developing a model to predict permeability could save significant resources for pharmaceutical company, while at the same time more rapidly identifying molecules that have sufficient permeability to become a drug
+```{r}
+library(AppliedPredictiveModeling)
+data("permeability")
+?permeability
+```
+
+b - The fingerprint predictor indicate the presence or absence of substructure of a molecule and are often sparse meaning that relatively few of the molecules contain each substructure. Filter out predictors that have low frequencies using nearzerovar, how many predictors are left for modeling?
+c - SPlit the data into training and test set, preprocess the data, and tune a PLS model. how many latent variables are optimal? what is the corresponding resampled estimate of R2
+d - predict the response for test set. What is the test set estimate of R2?
+e - try other models
+f - would you recommend any of your models to replace the permeability lab experiment
+
+```{r}
+zero_cols = nearZeroVar(fingerprints)
+length(zero_cols)
+dim(fingerprints)
+fingerprints=  fingerprints[,-zero_cols]
+```
+
+Split the data
+```{r}
+training = createDataPartition(permeability, .8)
+
+#training
+fingerprints_training = fingerprints[training$Resample1, ]
+permeability_training = permeability[training$Resample1]
+
+#testing
+fingerprints_testing = fingerprints[-training$Resample1, ]
+permeability_testing = permeability[-training$Resample1]
+
+str(fingerprints_training)
+str(fingerprints_testing)
+```
+Build a PSLR model
+```{r}
+ctrl = trainControl(method = 'repeatedcv', repeats = 5)
+set.seed(0)
+pls_model = train(fingerprints_training, permeability_training, method = 'pls',
+                  tuneLength = 40, preProc = c('center','scale'), trControl = ctrl)
+pls_model
+```
+Predict the performance of PLS
+```{r}
+y_hat = predict(pls_model, newdata = fingerprints_testing)
+r2_pls = R2(y_hat, permeability_testing)
+rmse_pls = RMSE(y_hat, permeability_testing)
+
+rmse_pls 
+r2_pls 
+```
+Build other models
+Try elastic net
+```{r}
+enet_grid = expand.grid(.lambda = seq(0,1, length = 10), .fraction = seq(0.05, 1, length = 20))
+set.seed(0)
+enet_model = train(fingerprints_training, permeability_training, method = 'enet', 
+                   tuneGrid = enet_grid, preProc = c('center','scale'), trControl = ctrl)
+
+y_hat = predict(enet_model, newdata = fingerprints_testing)
+R2(y_hat, permeability_testing)
+RMSE(y_hat, permeability_testing)
+```
+
+Using linear model
+
+```{r}
+set.seed(0)
+lm_model = train(fingerprints_training, permeability_training, method = 'lm', 
+                   preProc = c('center','scale'), trControl = ctrl)
+
+y_hat = predict(lm_model, newdata = fingerprints_testing)
+R2(y_hat, permeability_testing)
+RMSE(y_hat, permeability_testing)
+```
+RLM model
+```{r}
+set.seed(0)
+rlm = train(fingerprints_training, permeability_training, method = 'rlm', 
+                   preProc = c('pca'), trControl = ctrl)
+
+y_hat = predict(rlm, newdata = fingerprints_testing)
+R2(y_hat, permeability_testing)
+RMSE(y_hat, permeability_testing)
+```
+```{r}
+resamp = resamples(list(pls = pls_model, enet = enet_model, lm = lm_model, rlm =rlm))
+summary(resamp)
+```
+
+#3 
+A chemical manufacturing process for pharmaceutical product was discussed in chap 1.4. In this problem, the objective is to understand relationship between biological measurements of the raw materials (predictors), measurements of manufacturing process (predictors), and the response of product yield. Biological predictors cannot be changed but can be used to assess the quality of raw material before processing. On the other hand, manufacturing process predictors can be changed in the manufacturing process. Improving product yield by 1% will boost revenue by approximately one hundred thousand per batch
+```{r}
+library(AppliedPredictiveModeling)
+library(caret)
+data("ChemicalManufacturingProcess")
+
+process_predictors = ChemicalManufacturingProcess[,2:58]
+yield = ChemicalManufacturingProcess[,1]
+
+n_samples = dim(process_predictors)[1]
+n_features = dim(process_predictors)[2]
+```
+
+b - use imputation to fill missing values
+c - split the data into training and test set, preprocess data and tune to a model of your choice. What is the optimal performance metric
+d - predict the response for test set. What is the value of performance metric and how does it compare with resampled performance metric
+e - which predictors are important in the model that you trained? Do either the biological or process predictors dominate the list?
+f - explore relationship between top predictors and the response
+
+Fill missing values with median
+```{r}
+library(purrr)
+proc_pred = process_predictors
+replacements = sapply(process_predictors, median, na.rm = T)
+for (ci in 1:n_features){
+  bad_inds = is.na(process_predictors[,ci])
+  process_predictors[bad_inds, ci] = replacements[ci]
+}
+
+map_dbl(process_predictors, mean)
+```
+Look for any features with no variance:
+```{r}
+zero_cols = nearZeroVar(process_predictors)
+length(zero_cols)
+names(process_predictors)[zero_cols]
+process_predictors = process_predictors[,-zero_cols]
+```
+Split the data
+```{r}
+training = createDataPartition(yield, .8)
+proc_pred_train = process_predictors[training$Resample1,]
+yield_train = yield[training$Resample1]
+
+proc_pred_test = process_predictors[-training$Resample1,]
+yield_test = yield[-training$Resample1]
+```
+
+Build linear models
+```{r}
+ctrl = trainControl(method = 'repeatedcv', repeats = 5)
+set.seed(0)
+pls_model = train(proc_pred_train, yield_train, method = 'pls', tuneLength = 40, preProc = c('center','scale'), trControl = ctrl)
+
+y_hat = predict(pls_model, proc_pred_test)
+R2(y_hat, yield_test)
+RMSE(y_hat, yield_test)
+```
+Try elastic net
+```{r}
+enet_grid = expand.grid(.lambda = seq(0,1, length = 10), .fraction = seq(0.1, 1, length = 10))
+set.seed(0)
+enet_model = train(proc_pred_train, yield_train, method = 'enet', tuneGrid = enet_grid, preProcess = c('center','scale'), trControl = ctrl)
+
+y_hat = predict(enet_model, newdata = proc_pred_test)
+R2(y_hat, yield_test)
+RMSE(y_hat, yield_test)
+```
+RLM
+```{r}
+set.seed(0)
+rlm_model = train(proc_pred_train, yield_train, method = 'rlm', preProcess = c('pca'), trControl = ctrl)
+y_hat = predict(rlm_model, newdata = proc_pred_test)
+R2(y_hat, yield_test)
+RMSE(y_hat, yield_test)
+```
+```{r}
+resamp = resamples(list(rlm = rlm_model, enet = enet_model, pls = pls_model))
+summary(resamp)
+```
+```{r}
+enet_model
+```
+
+Look at the coefficients of choosen optimal model
+```{r}
+library(elasticnet)
+enet_base_model = enet(x = as.matrix(proc_pred_train), y = yield_train, lambda = 0.1111111, normalize = T)
+enet_coeff = predict(enet_base_model, newx = as.matrix(proc_pred_test), s = .5, mode = 'fraction', type = 'coefficients')
+enet_coeff$coefficients[enet_coeff$coefficients!=0]
+```
+```{r}
+varImp(enet_model)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

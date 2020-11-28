@@ -1,0 +1,363 @@
+---
+title: "Chap8 - Regression treed and rule based models"
+author: "Me"
+date: "9/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+From the book
+
+Load data and packages
+```{r}
+library(AppliedPredictiveModeling)
+data(solubility)
+```
+
+Create a control function that we will use across models. We create fold assignments explicitly instead of relying on random number seed
+```{r}
+library(caret)
+set.seed(100)
+indx = createFolds(solTrainY, returnTrain = T)
+ctrl = trainControl(method = 'cv', index = indx)
+```
+
+
+## Basic regression trees
+
+Fit two cart models to show initial splitting process. rpart only uses formulas so we put predictor and response to common dataframe
+```{r}
+library(rpart)
+train_data = solTrainXtrans
+train_data$y = solTrainY
+
+rp_stump = rpart(y ~., data = train_data, control = rpart.control(maxdepth = 1))
+rp_small = rpart(y ~., data = train_data, control = rpart.control(maxdepth = 2))
+```
+
+Tune the model
+```{r}
+set.seed(100)
+cart_tune = train(x = solTrainXtrans, y = solTrainY, method = 'rpart', tuneLength = 25, trControl = ctrl)
+cart_tune$finalModel
+```
+Plot the tuning results
+```{r}
+plot(cart_tune, scales = list(x = list(log = 10)))
+```
+Use the partykit package to make some nice plots. First convert the rpart objects into party objects.
+```{r}
+library(partykit)
+cart_tree = as.party(cart_tune$finalModel)
+plot(cart_tree)
+```
+Get the variable importance
+```{r}
+cart_imp = varImp(cart_tune, scale = F, competes = F)
+```
+Save the test results in a dataframe
+```{r}
+test_results = data.frame(obs = solTestY, CART = predict(cart_tune, solTestXtrans))
+```
+
+Create a conditional inference tree. This uses pvalues in splitting
+```{r}
+c_grid = data.frame(mincriterion = sort(c(.95, seq(.75, .99, length = 2))))
+
+set.seed(100)
+ctree_tune = train(x = solTrainXtrans, y = solTrainY, method = 'ctree', tuneGrid = c_grid, trControl = ctrl)
+plot(ctree_tune)
+```
+Conditional tree final model
+```{r}
+plot(ctree_tune$finalModel)
+```
+```{r}
+test_results$ctree = predict(ctree_tune, solTestXtrans)
+```
+
+
+## Regression trees and rule based models
+
+Tune the model tree using 'M5'. M = 10 is passed in to make sure that there are larger terminal nodes
+```{r}
+library(RWeka)
+set.seed(100)
+m5_tune = train(x = solTrainXtrans, y = solTrainY, method = 'M5', trControl = ctrl, control = Weka_control(M=10))
+m5_tune
+plot(m5_tune)
+```
+```{r}
+plot(m5_tune$finalModel)
+```
+Show rule based model too
+```{r}
+rule_fit = M5Rules(y ~., data = train_data, control = Weka_control(M = 10))
+rule_fit
+```
+## Bagged trees
+
+```{r}
+set.seed(100)
+treebag_tune = train(x = solTrainXtrans, y = solTrainY, method = 'treebag', nbagg = 50, trControl = ctrl)
+treebag_tune
+```
+## Random forest
+```{r}
+mtry_grid = data.frame(mtry = floor(seq(10, ncol(solTrainXtrans), length = 10)))
+
+#tuen the model using CV
+set.seed(100)
+rf_tune = train(x =  solTrainXtrans, y = solTrainY, method = 'rf', tuneGrid = mtry_grid, ntree = 1000, importance = T, trControl = ctrl)
+rf_tune
+```
+```{r}
+plot(rf_tune)
+```
+```{r}
+varImp(rf_tune, scale = F)
+```
+
+Tune the model using OOB estimates
+```{r}
+ctrl_oob = trainControl(method = 'oob')
+set.seed(100)
+
+rf_tune_oob = train(solTrainX, y = solTrainY, method = 'rf', tuneGrid = mtry_grid, ntree= 1000, importance = T, trControl = ctrl_oob)
+rf_tune_oob
+```
+
+Tune the model using conditional inference forest
+```{r}
+set.seed(100)
+
+set.seed(100)
+cond_rf_tune <- train(x = solTrainXtrans, y = solTrainY,
+                    method = "cforest",
+                    tuneGrid = mtry_grid,
+                    controls = cforest_unbiased(ntree = 1000),
+                    trControl = ctrl)
+```
+
+## Boosting
+
+
+```{r}
+gbmGrid <- expand.grid(interaction.depth = seq(1, 5, by = 2),
+                       n.trees = seq(100, 500, by = 50),
+                       shrinkage = c(0.01, 0.1), n.minobsinnode = c(5,10))
+set.seed(100)
+gbmTune <- train(x = solTrainXtrans, y = solTrainY,
+                 method = "gbm",
+                 tuneGrid = gbmGrid,
+                 trControl = ctrl,
+                 verbose = FALSE)
+
+plot(gbmTune)
+```
+
+## Cubist
+```{r}
+cb_grid = expand.grid(committees = c(1:10, 20, 50, 75),
+                      neighbors = c(0, 1, 5, 9))
+
+set.seed(100)
+cubist_tune = train(solTrainXtrans, solTrainY, 'cubist', tuneGrid = cb_grid, trControl = ctrl)
+cubist_tune
+```
+```{r}
+plot(cubist_tune, auto.key = list(columns = 4, lines = T))
+```
+
+```{r}
+varImp(cubist_tune, scale = F)
+```
+
+## Computing
+
+The R packages used in this section are caret, Cubist, gbm, ipred, party, partykit, rpart, and Rweka
+
+## Single Trees
+Two widely used implementations for single regression trees in R are rpart and party. The rpart package makes split based on CART methodology using `rpart` function, whereas the party makes split based on conditional inference framework using `ctree`. Both rpart and ctree uses formula methods
+
+```{r}
+library(rpart)
+rpart_tree = rpart(y ~., data = train_data)
+
+#or
+
+c_tree = ctree(y ~., data = train_data)
+```
+
+the `rpart` function has several control parameters that can be accessed through rpart.control argument. Two that are commonly used in training and can be accessed through `train` function are complex parameter (cp) and maximum node depth (maxdepth). To tune an CART tree over complexity parameter, the method option in the train function should be set to `method = 'rpart'`. To tune over maximum depth, method should be set to `rpart2`
+```{r}
+set.seed(100)
+rpart_tune = train(solTrainXtrans, solTrainY, method = 'rpart2', tuneLength = 10, trControl = trainControl(method = 'cv'))
+```
+
+Likewise, the `party` package has several control parameters that can be accessed through ctree_control argument. Two of these parameters are commonly used in training: `mincriterion` and `maxdepth`. mincriterion defines the statistical criterion that must be met in order to continue splitting; max depth is the maximum depth of the tree. To tune a conditional inference over mincriterion, the method should be `ctree`. To tune over maximum depth, method should be `ctree2`
+
+the `plot` method in party pacakge can produce tree diagrams
+plot(treeObject)
+
+to produce such plot as rpart trees, the partykit can be used first to convert rpart object to party object then use plot
+```{r}
+library(partykit)
+rpart_tree2 = as.party(rpart_tree)
+plot(rpart_tree2)
+```
+
+## Model trees
+
+The main implementation for model trees can be found in the Weka software. the model can be accessed in R using RWeka package. There are two different interfaces, M5P fits the model tree while M5Rules uses the rule based version. In either case, the functions work with formula methods
+```{r}
+library(RWeka)
+m5tree = M5P(y ~., data = train_data)
+
+#or
+
+m5rules = M5Rules(y ~ ., data = train_data)
+```
+
+In this example, the minimum number of training set points required to create additional splits was raised from the default of 4-10. To do this, the control argument is used
+```{r}
+m5tree = M5P(y ~., data = train_data, control = Weka_control(M = 10))
+plot(m5tree)
+```
+
+The control argument also has options for toggling the use of smoothing and pruning. If the full model tree is used, a visualization similar to Fig 8.10 can be created by the plot function
+
+To tune these models, the `train` function of caret package has two options using method = 'm5' evaluates model trees as rule-based versions of the model, as well as the use of smoothing and pruning. Figure 8.12 shows the results of evaluating these models from the code
+```{r}
+set.seed(100)
+m5_tune = train(solTrainXtrans, y = solTrainY, method = 'M5', trControl = trainControl(method = 'cv'), 
+                ### use option for m5 to specify minimum number of samples needed to further the splits
+                control = Weka_control(M = 10))
+
+plot(m5_tune)
+```
+```{r}
+plot(m5_tune$finalModel)
+```
+Train with method = 'M5Rules' uses rule-based version
+
+## Bagged trees
+The ipred package contains two functiosn for bagged trees: `bagging` uses the formula interface while `ipredbagg` has the non-formula interface
+```{r}
+library(ipred)
+bagged_tree = ipredbagg(solTrainY, solTrainXtrans)
+
+#Or 
+bagged_tree = bagging(y ~., data = train_data)
+```
+
+the function uses rpart function and details about the type of tree can be specified by passing `rpart.control` to the control argument for bagging and ipredbagg. By default, the largest possible tree is created
+
+Several other packages have function for bagging. The aforementioned Rweka has function  called bagging and the caret package has general framework for bagging many models including trees called `bag`. Conditional inference trees can be bagged using `cforest` function in the party package if the mtry = p
+```{r}
+library(party)
+
+bag_ctrl = cforest_control(mtry = ncol(train_data) - 1)
+
+bagged_tree = cforest(y ~., data = train_data, controls = bag_ctrl)
+```
+## Random forest
+the primary implementation for random forest comes with the package with the same name
+```{r}
+library(randomForest)
+rf_model = randomForest(solTrainXtrans, solTrainY)
+
+#or 
+rf_model = randomForest(y ~., data = train_data)
+```
+
+The two main arguments are `mtry` for number of preds that are randomly sampled as candidates for each split and `ntree` for the number of bootstrap samples. The default for mtry is p/3. The number of trees should be large enough to provide stable, reproducible results. atleast 1000 bootstrap samples should be used. Another important option is importance. By default variable importance is not computed as they are time consuming, importance = T will generate these values
+```{r}
+library(randomForest)
+rf_model = randomForest(solTrainXtrans, solTrainY, importance = T, ntree = 500)
+```
+For forest built using conditional inference trees, the `cforest` function in the party package is available. It has similar options, but the controls argument allows the user to pick the type of splitting algorithm to use (biased, unbiased).
+Neither of these functions can  be used with missing data
+
+The `train` function contains wrappers for tuning either of these models by specifying method = rf or method = cforest. Optimizing the mtry parameter may result to slight increase in performance. Also train can use standard resampling method as opposed to OOB.
+For random forest models, variable scores can be accessed using a function in that pacakge called `importance`. For cforest objects, the analogous function in the party package is `varimp`
+
+Each package tends to have its own function for calculating importance scores, similar to the situation for class probabilities. Caret has unifying function `varImp` that is a wrapper for variable importance functions for the following tree-model objects: rpart, classbag(ipred package), randomforest, cforest, gbm, and cubist
+
+## Boosted Trees
+
+The most widely used pacakge for boosting regression trees via stocahstic gradient boosting is gbm. Like random forest interface, the model can be built in two ways
+```{r}
+library(gbm)
+
+gbm_model = gbm.fit(solTrainXtrans, solTrainY, distribution = 'gaussian')
+
+#or
+
+gbm_model = gbm(y ~., data = train_data, distribution = 'gaussian')
+```
+
+The distribution argument defines the type of loss function that will be optimized using boosting. For a continuous response, it should be set to gaussian. 
+The number of trees (n.trees), depth of trees(interaction.depth), shrinkage, and proportion of obs to be sampled (bag.fraction) can all be directly set in call to gbm
+like other parameters, `train` function can be used to tune over these parameters. To tune overinteraction depth, number of trees, and shrinkage, for example, we first define a tuning grid. Then we train over this grid as follows
+```{r}
+gbm_grid = expand.grid(interaction.depth = seq(1,5, by = 2), 
+                       n.trees = seq(100, 500, by = 100),
+                       shrinkage = c(0.01, 1), n.minobsinnode = 10)
+
+set.seed(100)
+gbm_tune = train(solTrainXtrans, solTrainY, tuneGrid = gbm_grid, method = 'gbm',
+                 ##the gbm function produces copious amounts of output, to avoid printing
+                 verbose = F)
+plot(gbm_tune)
+```
+
+## Cubist
+As previously mentioned, the implemntation for this model is created by RuleQuest. an R package `Cubist` was created using the open-source code. The function does not have a formula method since its desirable to have Cubist code manage the creation of dummy variables. To create a simple rule based model with single commitee and no instance-based adjustement, we can use the simple code
+
+```{r}
+library(Cubist)
+cubist_model = cubist(solTrainX, solTrainY)
+```
+An argument committees fits multiple models. 
+The choice of instance-based corrections does not need to be made until samples are predicted. The `predict` function has an argumetn neighbors that can take on single integer to adjust rule based predictions. 
+
+Once the model is trained, the `summary` function generates the exact rules that were used as well as the final smoothed linear model for each rule
+```{r}
+summary(cubist_model)
+```
+The train function of caret can tune the model over values of committees and neighbors through resampling
+```{r}
+cubist_tuned = train(solTrainXtrans, solTrainY, method = 'cubist')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

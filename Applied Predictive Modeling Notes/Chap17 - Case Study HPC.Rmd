@@ -1,0 +1,204 @@
+---
+title: "Chap17 - Case study"
+author: "Me"
+date: "10/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(AppliedPredictiveModeling)
+data(schedulingData)
+
+### Make a vector of predictor names
+predictors <- names(schedulingData)[!(names(schedulingData) %in% c("Class"))]
+
+### A few summaries and plots of the data
+library(Hmisc)
+describe(schedulingData)
+
+
+```
+
+```{r}
+library(tabplot)
+tableplot(schedulingData[, c( "Class", predictors)])
+
+mosaicplot(table(schedulingData$Protocol, 
+                 schedulingData$Class), 
+           main = "")
+```
+```{r}
+library(lattice)
+xyplot(Compounds ~ InputFields|Protocol,
+       data = schedulingData,
+       scales = list(x = list(log = 10), y = list(log = 10)),
+       groups = Class,
+       xlab = "Input Fields",
+       auto.key = list(columns = 4),
+       aspect = 1,
+       as.table = TRUE)
+
+```
+
+#Computing
+
+Training and test set were created
+```{r}
+library(caret)
+set.seed(1104)
+inTrain <- createDataPartition(schedulingData$Class, p = .8, list = FALSE)
+
+### There are a lot of zeros and the distribution is skewed. We add
+### one so that we can log transform the data
+schedulingData$NumPending <- schedulingData$NumPending + 1
+
+trainData <- schedulingData[ inTrain,]
+testData  <- schedulingData[-inTrain,]
+```
+The tree based methods did not use independent categories but other model requires that the categorical predictors are decomposed into dummy variables. A model formula was created that log transforms several predictors
+
+```{r}
+modForm <- as.formula(Class ~ Protocol + log10(Compounds) +
+  log10(InputFields)+ log10(Iterations) +
+  log10(NumPending) + Hour + Day)
+
+### Create an expanded set of predictors with interactions. 
+
+modForm2 <- as.formula(Class ~ (Protocol + log10(Compounds) +
+  log10(InputFields)+ log10(Iterations) +
+  log10(NumPending) + Hour + Day)^2)
+```
+
+```{r}
+expandedTrain <- model.matrix(modForm2, data = trainData)
+expandedTest  <- model.matrix(modForm2, data = testData)
+expandedTrain <- as.data.frame(expandedTrain)
+expandedTest  <-  as.data.frame(expandedTest)
+```
+
+```{r}
+zv <- checkConditionalX(expandedTrain, trainData$Class)
+
+### Keep the expanded set to use for models where we must manually add
+### more complex terms (such as logistic regression)
+
+expandedTrain <-  expandedTrain[,-zv]
+expandedTest  <-  expandedTest[, -zv]
+```
+
+```{r}
+### Create the cost matrix
+costMatrix <- ifelse(diag(4) == 1, 0, 1)
+costMatrix[4, 1] <- 10
+costMatrix[3, 1] <- 5
+costMatrix[4, 2] <- 5
+costMatrix[3, 2] <- 5
+rownames(costMatrix) <- colnames(costMatrix) <- levels(trainData$Class)
+costMatrix
+```
+
+
+
+Since the costs defined will be used to judge the models, functions were written to estimate this value from set of observed and predicted classes
+```{r}
+cost <- function(pred, obs)
+{
+  isNA <- is.na(pred)
+  if(!all(isNA))
+  {
+    pred <- pred[!isNA]
+    obs <- obs[!isNA]
+    
+    cost <- ifelse(pred == obs, 0, 1)
+    if(any(pred == "VF" & obs == "L")) cost[pred == "L" & obs == "VF"] <- 10
+    if(any(pred == "F" & obs == "L")) cost[pred == "F" & obs == "L"] <- 5
+    if(any(pred == "F" & obs == "M")) cost[pred == "F" & obs == "M"] <- 5
+    if(any(pred == "VF" & obs == "M")) cost[pred == "VF" & obs == "M"] <- 5
+    out <- mean(cost)
+  } else out <- NA
+  out
+}
+
+### Make a summary function that can be used with caret's train() function
+costSummary <- function (data, lev = NULL, model = NULL)
+{
+  if (is.character(data$obs))  data$obs <- factor(data$obs, levels = lev)
+  c(postResample(data[, "pred"], data[, "obs"]),
+    Cost = cost(data[, "pred"], data[, "obs"]))
+}
+
+### Create a control object for the models
+ctrl <- trainControl(method = "repeatedcv", 
+                     repeats = 5,
+                     summaryFunction = costSummary)
+```
+
+
+
+
+
+The specifics of the model can be found in the chapter directory of APM. Cost sensitive and weighted models are
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+
+```{r}
+#cost-sensitive CART
+set.seed(857)
+rpFitCost <- train(x = trainData[, predictors],
+                   y = trainData$Class,
+                   method = "rpart",
+                   metric = "Cost",
+                   maximize = FALSE,
+                   tuneLength = 20,
+                   parms =list(loss = costMatrix),
+                   trControl = ctrl)
+```
+
+```{r}
+c5Grid <- expand.grid(trials = c(1, (1:10)*10),
+                      model = "tree",
+                      winnow = c(TRUE, FALSE))
+
+set.seed(857)
+c50Cost <- train(x = trainData[, predictors],
+                 y = trainData$Class,
+                 method = "C5.0",
+                 metric = "Cost",
+                 maximize = FALSE,
+                 costs = costMatrix,
+                 tuneGrid = c5Grid,
+                 trControl = ctrl)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

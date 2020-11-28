@@ -1,0 +1,364 @@
+---
+title: "Chap 11 - Measuring performance in classification models"
+author: "Me"
+date: "10/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Computing
+To create the data, the quadboundaryfunc from APM was used. 
+
+```{r}
+library(AppliedPredictiveModeling)
+set.seed(975)
+training <- quadBoundaryFunc(500)
+testing <- quadBoundaryFunc(1000)
+
+testing$class2 <- ifelse(testing$class == "Class1", 1, 0)
+testing$ID <- 1:nrow(testing)
+```
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+Random forest and QDA are fit in the data
+
+Fit models
+```{r}
+library(MASS)
+qda_fit = qda(class ~ X1 + X2, data = training)
+
+library(randomForest)
+rf_fit = randomForest(class ~ X1 + X2, data = training, ntree = 1000)
+```
+
+The output of the predict function for qda objects include both predicted class and associated probabilities in a matrix called posterior. Later in this section, the training set probabilities will be used in additional model to calibrate class probabilities. The calibration will then be applied to test set probabilities
+
+random forest requires two calls to predict function to get predicted classes and probabilities
+```{r}
+testing$qda = predict(qda_fit, testing)$posterior[,1]
+testing$rf = predict(rf_fit, testing, type = 'prob')[,1]
+```
+
+Sensitivity and specificity 
+care function for computing sensitivity and specificity. These functions require the user to indicate role of each classes
+```{r}
+#class 1 will be the event of interest
+sensitivity(data = testing$rf, reference = testing$class, positive = 'Class1')
+specificity(data = testing$rf, reference = testing$class, negative = 'Class2')
+```
+
+
+
+Generate calibration analysis
+```{r}
+library(caret)
+cal_data1 = calibration(class ~ qda + rf, data = testing, cuts = 10)
+xyplot(cal_data1, auto.key = list(columns = 2))
+```
+
+To calibrate the data, treat the probabilities as inputs to the model
+```{r}
+train_probs = training
+train_probs$qda = predict(qda_fit)$posterior[,1]
+train_probs
+```
+
+Calibrating probabilities
+calibration plots described above are available in calibration.plot function in PresenceAbsence package and in the caret package calibration. 
+
+To recalibrate QDA probabilities, a post processing model was created that models true outcome as a function of class probability. To fit a sigmoidal function, a logistic regression model is used via glm. To fit model, the function requires family argument to specify the type of outcome data being modeled. Since outcome is discrete, the binomial distribution is selected.
+
+These models take probabilities as inputs and based on true class recalibrate them
+
+
+The bayesian approach for calibration is to treat training set class probabilities to estimate probaiblities Pr[x] and Pr[x|y = Cl]. The naive bayes function in klaR can be used for computation
+
+THe option kernel = T allows flexible function to model the probability distribution of class probabilities. These new probabilities are evaluated by another plot
+```{r}
+library(klaR)
+nb_cal = NaiveBayes(class ~ qda, data = train_probs, usekernel = T)
+summary(nb_cal)
+```
+
+We use relevel because glm() models the probability of second factor level
+```{r}
+lr_cal = glm(relevel(class, 'Class2') ~ qda, data = train_probs, family = 'binomial')
+summary(lr_cal)
+```
+The corrected probabilities are created by original model and applying sigmoidal equation with estimated slope and intercept. in R, predict function can be used. 
+
+
+
+Now predict the test set using modified class probability
+```{r}
+testing$qda2 = predict(nb_cal, testing[, 'qda', drop = F])$posterior[,1]
+testing$qda3 = predict(lr_cal, testing[, 'qda', drop = F], type = 'response')
+```
+
+Manipulate data for pretty plotting
+```{r}
+simulated_probs = testing[,c('class','rf','qda3')]
+names(simulated_probs) = c('True Class','rf_prob','QDA_cal')
+simulated_probs$RandomForestClass = predict(rf_fit, testing)
+```
+
+```{r}
+cal_data2 = calibration(class ~ qda+ qda2+ qda3, data = testing)
+cal_data2$data$calibModelVar= as.character(cal_data2$data$calibModelVar)
+
+cal_data2$data$calibModelVar <- ifelse(cal_data2$data$calibModelVar == "qda", 
+                                      "QDA",
+                                      cal_data2$data$calibModelVar)
+cal_data2$data$calibModelVar <- ifelse(cal_data2$data$calibModelVar == "qda2", 
+                                      "Bayesian Calibration",
+                                      cal_data2$data$calibModelVar)
+
+cal_data2$data$calibModelVar <- ifelse(cal_data2$data$calibModelVar == "qda3", 
+                                      "Sigmoidal Calibration",
+                                      cal_data2$data$calibModelVar)
+cal_data2$data$calibModelVar <- factor(cal_data2$data$calibModelVar,
+                                      levels = c("QDA", 
+                                                 "Bayesian Calibration", 
+                                                 "Sigmoidal Calibration"))
+```
+
+
+```{r}
+xyplot(cal_data2, auto.key = list(columns = 1))
+```
+Recreate the model in over-fitting chapter
+```{r}
+library(caret)
+data(GermanCredit)
+```
+
+Remove near zero variance predictors then get rid of a few predictors that duplicate values. 
+
+```{r}
+GermanCredit <- GermanCredit[, -nearZeroVar(GermanCredit)]
+GermanCredit$CheckingAccountStatus.lt.0 <- NULL
+GermanCredit$SavingsAccountBonds.lt.100 <- NULL
+GermanCredit$EmploymentDuration.lt.1 <- NULL
+GermanCredit$EmploymentDuration.Unemployed <- NULL
+GermanCredit$Personal.Male.Married.Widowed <- NULL
+GermanCredit$Property.Unknown <- NULL
+GermanCredit$Housing.ForFree <- NULL
+```
+
+Split the data into training(80%) and test(20%)
+```{r}
+set.seed(100)
+inTrain <- createDataPartition(GermanCredit$Class, p = .8)[[1]]
+GermanCreditTrain <- GermanCredit[ inTrain, ]
+GermanCreditTest  <- GermanCredit[-inTrain, ]
+```
+
+Modeling
+```{r}
+logistic_reg = train(Class ~., data = GermanCreditTrain, method = 'glm', trControl = trainControl(method = 'repeatedcv', repeats = 5))
+
+##predict test set
+credit_results = data.frame(obs = GermanCreditTest$Class)
+credit_results$prob = predict(logistic_reg, GermanCreditTest, type = 'prob')[,'Bad']
+credit_results$pred = predict(logistic_reg, GermanCreditTest)
+credit_results$label=  ifelse(credit_results$obs == 'Bad', 'True Outcome: Bad Credit', 'True Outcome: Good Credit')
+credit_results
+```
+
+Plot the probability of bad credit
+```{r}
+library(ggplot2)
+histogram(~prob|label,
+          data = credit_results,
+          layout = c(2, 1),
+          nint = 20,
+          xlab = "Probability of Bad Credit",
+          type = "count")
+```
+```{r}
+library(tidyverse)
+credit_results %>%
+  ggplot(aes(prob))+
+  geom_histogram(fill = 'steelblue', color = 'black')+
+  facet_wrap(~label)
+```
+Calculate and plot the calibration curve
+```{r}
+credit_calib = calibration(obs ~ prob, data = credit_results)
+xyplot(credit_calib)
+```
+Create a confusion matrix from the test set
+```{r}
+confusionMatrix(data = credit_results$pred, reference = credit_results$obs)
+```
+ROC Curves
+Like glm(), roc treats the last level of factor as the event of interest so we use relevel to change the observed class data
+
+```{r}
+library(pROC)
+credit_roc = roc(relevel(credit_results$obs, 'Good'), credit_results$prob)
+
+#data for sensitivityu and specificity
+coords(credit_roc, 'all')[,1:3]
+#area under the curve
+auc(credit_roc)
+#confidence interval
+ci.auc(credit_roc, conf.level = .9)
+```
+Note that the x axis is reversed
+```{r}
+plot(credit_roc)
+```
+Old school
+```{r}
+plot(credit_roc, legacy.axes = T)
+```
+
+## Understanding computing
+```{r}
+library(AppliedPredictiveModeling)
+
+set.seed(975)
+simulated_train = quadBoundaryFunc(500)
+simulated_test = quadBoundaryFunc(1000)
+head(simulated_train)
+```
+
+RF and QDA to fit the data
+```{r}
+library(randomForest)
+rf_model = randomForest(class ~ X1 + X2, data = simulated_train, ntree = 2000)
+```
+```{r}
+library(MASS)
+qda_model = qda(class ~ X1 + X2, data = simulated_train)
+```
+
+predict output for qda objects include predicted classes and probability in posterior
+```{r}
+qda_train_pred = predict(qda_model, simulated_train)
+names(qda_train_pred)
+head(qda_train_pred$class)
+head(qda_train_pred$posterior)
+```
+```{r}
+qda_test_pred = predict(qda_model, simulated_test)
+simulated_train$QDAprob = qda_train_pred$posterior[,'Class1']
+simulated_test$QDAprob = qda_test_pred$posterior[,'Class1']
+```
+
+Random forest requires two calls to the predict to get the predicted class and class probabilities
+```{r}
+rf_test_pred = predict(rf_model, simulated_test, type = 'prob')
+head(rf_test_pred)
+```
+```{r}
+simulated_test$RFprob = rf_test_pred[,'Class1']
+simulated_test$RFClass = predict(rf_model, simulated_test)
+head(simulated_test)
+```
+
+Sensitivity and specificity
+```{r}
+library(caret)
+
+#class 1 will be used as event of interest
+sensitivity(data = simulated_test$RFClass, reference = simulated_test$class, positive = 'Class1')
+specificity(data = simulated_test$RFClass, reference = simulated_test$class, negative = 'Class2')
+
+#PPV
+posPredValue(data = simulated_test$RFClass, reference = simulated_test$class, positive = 'Class1')
+```
+Confusion matrix
+```{r}
+confusionMatrix(data = simulated_test$RFClass, reference = simulated_test$class, positive = 'Class1')
+```
+
+ROC curve
+R object must first be created the contains relevant info using pROC function roc.
+```{r}
+library(pROC)
+
+roc_curve = roc(response = simulated_test$class, predictor = simulated_test$RFprob, 
+                ### this function assumes that the second class is event of interest so we reverse the labels
+                levels = rev(levels(simulated_test$class)))
+auc(roc_curve)
+
+#can use plots to produce roc curve
+plot(roc_curve, legact.axes = T)
+```
+
+Use add = T next time plot.auc is used.
+
+Lift curve can be created using lift function in the caret package. 
+```{r}
+labs = c(RFprob = 'Random Forest', QDAprob = 'Quadratic Discriminant Analysis')
+lift_curve = lift(class ~ RFprob + QDAprob, data = simulated_test, labels = labs)
+lift_curve
+```
+```{r}
+plot(lift_curve)
+```
+## calibrating probabilities
+
+Syntax for calibration is similar to lift function
+```{r}
+cal_curve = calibration(class ~ RFprob + QDAprob, data = simulated_test)
+xyplot(cal_curve)
+```
+To recalibrate QDA, post processing model is created that models true outcome as a function of class probability. To fit a sigmoidal function, logistic regression is used via glm function. Family argument is needed to specify outcome
+
+```{r}
+#glm() models the probability of the second factor level, so the function relevel is used to reverse factor levels
+sigmoidal_cal = glm(relevel(class, ref = 'Class2') ~ QDAprob, data = simulated_train, family = 'binomial')
+summary(sigmoidal_cal)
+```
+Corrected probabilities are created by taking the original model and applying logistic equation with estimated slope and intercept
+```{r}
+sigmoid_probs = predict(sigmoidal_cal, newdata = simulated_test[,'QDAprob', drop = F], type = 'response')
+simulated_test$QDAsigmoid = sigmoid_probs
+```
+
+Bayesian approach is to treat training set class probabilities to estimate probabilities Pr[x] = Pr[X|Y = cl]
+NaiveBayes in the klaR package can be used for computations
+```{r}
+library(klaR)
+bayes_cal = NaiveBayes(class ~ QDAprob, data = simulated_train, usekernel = T)
+
+#like qda, predict function creates both classes and probabilities
+bayes_probs = predict(bayes_cal, newdata = simulated_test[,'QDAprob', drop = F])
+simulated_test$QDABayes =  bayes_probs$posterior[,'Class1']
+head(simulated_test[,c(5:6, 8,9)])
+```
+
+The option kernel = T allows flexible function to model probability distribution of class probaiblities. 
+Evaluate new probabilities
+```{r}
+cal_curve2 = calibration(class ~ QDAprob + QDABayes + QDAsigmoid, data = simulated_test)
+xyplot(cal_curve2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

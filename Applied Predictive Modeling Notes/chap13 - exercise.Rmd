@@ -1,0 +1,290 @@
+---
+title: "Chap13 - Exercises"
+author: "Me"
+date: "10/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#1 
+Use hepatic injury data from previous exercise set. 
+a - work with the same training and testing and preprocessing. Using same classification statistic, build non linear models. Which models has the best predictive ability? Does non linear structure help improve model classification?
+b - what are the top 5 important predictors
+c-  combine biological and chemical to one predictor set. Which model has the best performance? What are the top 5?
+d - which model would you recommend
+
+```{r}
+library(caret)
+library(AppliedPredictiveModeling)
+library(pROC)
+```
+```{r}
+data(hepatic)
+library(forcats)
+any_damage = fct_collapse(injury, 'Yes' = c('Mild','Severe'), No = 'None')
+table(any_damage)
+```
+## Biological predictors
+```{r}
+zv_cols = nearZeroVar(bio)
+X_bio = bio[,-zv_cols]
+
+findLinearCombos(X_bio)
+```
+No linear combination of predictors
+
+BUILD MODELS
+```{r}
+ctrl =  trainControl( summaryFunction=twoClassSummary, classProbs=TRUE )
+```
+
+##MDA
+```{r}
+set.seed(100)
+mda_model = train(X_bio, any_damage, method = 'mda', tuneGrid = expand.grid(subclasses = 1:5), metric = 'ROC', trControl = ctrl)
+mda_preds = predict(mda_model, X_bio, type = 'prob')
+mda_roc = roc(response = any_damage, predictor = mda_preds[,1])
+mda_auc = mda_roc$auc[1]
+mda = list(model = mda_model, roc = mda_roc, auc = mda_auc)
+mda
+```
+
+##NN
+```{r}
+set.seed(100)
+nnet_grid = expand.grid(size = 1:5, decay = c(0, .1, 1, 2))
+nnet_model = train(X_bio, any_damage, method = 'nnet', preProcess = c('center','scale','spatialSign'),
+                   tuneGrid = nnet_grid, metric = 'ROC', trace = F, maxit = 2000, trControl = ctrl)
+nnet_preds = predict(nnet_model, X_bio, type = 'prob')
+nnet_roc = roc(response = any_damage, predictor = nnet_preds[,1])
+nnet_auc = nnet_roc$auc[1]
+nnet = list(model = nnet_model, roc = nnet_roc, auc = nnet_auc)
+nnet
+```
+##SVm
+```{r}
+set.seed(100)
+sigma_est = kernlab::sigest(as.matrix(X_bio))
+svm_grid = expand.grid(sigma = sigma_est[1], C= 2^seq(-4,4))
+svm_model = train(X_bio, any_damage, method = 'svmRadial', tuneGrid = svm_grid, preProcess = c('center','scale'), metric = 'ROC', fit = F, trControl = ctrl)
+svm_preds = predict(svm_model, X_bio, type = 'prob')
+svm_roc = roc(response = any_damage, predictor = svm_preds[,1])
+svm_auc = svm_roc$auc[1]
+svm = list(model = svm_model, roc = svm_roc, auc = svm_auc)
+```
+
+#KNN
+```{r}
+set.seed(100)
+knn_model = train(X_bio, any_damage, method = 'knn', tuneLength = 20, preProcess = c("center",'scale'), metric = 'ROC', trControl = ctrl)
+knn_preds = predict(knn_model, X_bio, type ='prob')
+knn_roc = roc(response = any_damage, predictor = knn_preds[,1])
+knn_auc = knn_roc$auc[1]
+knn = list(model = knn_model, roc = knn_roc, auc = knn_auc)
+```
+Naive bayes
+```{r}
+set.seed(100)
+nb_model = train(X_bio, any_damage, method = 'nb', metric = 'ROC', trControl = ctrl)
+nb_preds = predict(nb_model, X_bio, type = 'prob')
+nb_roc = roc(response = any_damage, predictor = nb_preds[,1])
+nb_auc = nb_roc$auc[1]
+nb = list(model = nb_model, roc = nb_roc, auc = nb_auc)
+```
+
+```{r}
+bio_result = list( mda = mda, nnet=nnet, svm=svm, knn=knn, nb=nb )
+
+df = rbind(data.frame(name = 'MDA', auc = bio_result$mda$auc),
+           data.frame(name = 'NNET', auc = bio_result$nnet$auc),
+           data.frame(name = 'SVM', auc = bio_result$svm$auc),
+           data.frame(name = 'KNN', auc = bio_result$knn$auc),
+           data.frame(name = 'NB', auc = bio_result$nb$auc))
+df
+```
+
+```{r}
+varImp(bio_result$mda$model)
+```
+
+## Chemical predictors
+```{r}
+zv_cols = nearZeroVar(chem)
+X_chem = chem[,-zv_cols]
+
+flc = findLinearCombos(X_chem)
+X_chem = X_chem[, -flc$remove]
+```
+
+#Build models
+
+```{r}
+set.seed(100)
+mda_model = train(X_chem, any_damage, method = 'mda', tuneGrid = expand.grid(subclasses = 1:5), metric = 'ROC', trControl = ctrl)
+mda_preds = predict(mda_model, X_chem, type = 'prob')
+mda_roc = roc(response = any_damage, predictor = mda_preds[,1])
+mda_auc = mda_roc$auc[1]
+mda = list(model = mda_model, roc = mda_roc, auc = mda_auc)
+```
+
+```{r}
+set.seed(100)
+nnet_grid = expand.grid(size = 1:5, decay = c(0, .1, 1, 2))
+nnet_model = train(X_chem, any_damage, method = 'nnet', preProcess = c('center','scale','spatialSign'),
+                   tuneGrid = nnet_grid, metric = 'ROC', trace = F, maxit = 2000, trControl = ctrl)
+nnet_preds = predict(nnet_model, X_chem, type = 'prob')
+nnet_roc = roc(response = any_damage, predictor = nnet_preds[,1])
+nnet_auc = nnet_roc$auc[1]
+nnet = list(model = nnet_model, roc = nnet_roc, auc = nnet_auc)
+```
+
+```{r}
+set.seed(100)
+sigma_est = kernlab::sigest(as.matrix(X_chem))
+svm_grid = expand.grid(sigma = sigma_est[1], C= 2^seq(-4,4))
+svm_model = train(X_chem, any_damage, method = 'svmRadial', tuneGrid = svm_grid, preProcess = c('center','scale'), metric = 'ROC', fit = F, trControl = ctrl)
+svm_preds = predict(svm_model, X_chem, type = 'prob')
+svm_roc = roc(response = any_damage, predictor = svm_preds[,1])
+svm_auc = svm_roc$auc[1]
+svm = list(model = svm_model, roc = svm_roc, auc = svm_auc)
+```
+
+```{r}
+set.seed(100)
+knn_model = train(X_chem, any_damage, method = 'knn', tuneLength = 20, preProcess = c("center",'scale'), metric = 'ROC', trControl = ctrl)
+knn_preds = predict(knn_model, X_chem, type ='prob')
+knn_roc = roc(response = any_damage, predictor = knn_preds[,1])
+knn_auc = knn_roc$auc[1]
+knn = list(model = knn_model, roc = knn_roc, auc = knn_auc)
+```
+
+```{r}
+set.seed(100)
+nb_model = train(X_chem, any_damage, method = 'nb', metric = 'ROC', trControl = ctrl)
+nb_preds = predict(nb_model, X_chem, type = 'prob')
+nb_roc = roc(response = any_damage, predictor = nb_preds[,1])
+nb_auc = nb_roc$auc[1]
+nb = list(model = nb_model, roc = nb_roc, auc = nb_auc)
+```
+
+```{r}
+chem_result = list( mda = mda, nnet=nnet, svm=svm, knn=knn, nb=nb )
+
+df = rbind(data.frame(name = 'MDA', auc = chem_result$mda$auc),
+           data.frame(name = 'NNET', auc = chem_result$nnet$auc),
+           data.frame(name = 'SVM', auc = chem_result$svm$auc),
+           data.frame(name = 'KNN', auc = chem_result$knn$auc),
+           data.frame(name = 'NB', auc = chem_result$nb$auc))
+df
+```
+
+```{r}
+varImp(chem_result$nnet$model, scale = F)
+```
+
+```{r}
+plot(bio_result$mda$roc, legacy.axes = T, add = F, col = 'gray')
+plot(chem_result$nnet$roc, legacy.axes = T, add =  T, col = 'darkgray')
+```
+
+
+##2 
+Use fatty acid data from previous exercise set
+a - use same data splitting and preprocessing. Which model has the best predictive ability? How does optimal model compare to linear models. would you infer that data have non linear separation
+b - which oil type does optimal model accurately predict? least accurately predict?
+
+```{r}
+library(caret)
+library(AppliedPredictiveModeling)
+data(oil)
+```
+
+```{r}
+zv_cols = nearZeroVar(fattyAcids)
+findLinearCombos(fattyAcids)
+```
+## Build models
+
+##mda
+```{r}
+set.seed(100)
+mda_model = train(fattyAcids, oilType, method = 'mda', tuneGrid = expand.grid(.subclasses = 1:3))
+mda_preds = predict(mda_model, fattyAcids)
+mda_cm = confusionMatrix(data = mda_preds, reference = oilType)
+mda = list(model = mda_model, predictions = mda_preds, confusion_matrix = mda_cm)
+```
+
+#NN
+```{r}
+nnet_grid = expand.grid(.size = 1:5, .decay = c(0, .1,1,2))
+set.seed(100)
+nnet_model = train(fattyAcids, oilType, method = 'nnet', tuneGrid = nnet_grid, preProcess =c("center","scale","spatialSign"),trace = F, maxit = 2000)
+nnet_preds = predict(nnet_model, fattyAcids)
+nnet_cm = confusionMatrix(data = nnet_preds, reference = oilType)
+nnet = list(model = nnet_model, predictions = nnet_preds, confusion_matrix = nnet_cm)
+```
+
+##SVm
+```{r}
+library(kernlab)
+sigma_est = sigest(as.matrix(fattyAcids))
+svm_grid = expand.grid(.sigma = sigma_est[1], .C = 2^seq(-4.4))
+
+set.seed(100)
+svm_model = train(fattyAcids, oilType, method = 'svmRadial', tuneGrid = svm_grid, preProcess =c("center","scale"))
+svm_preds = predict(svm_model, fattyAcids)
+svm_cm = confusionMatrix(data = svm_preds, reference = oilType)
+svm = list(model = svm_model, predictions = svm_preds, confusion_matrix = svm_cm)
+```
+
+#KNN
+```{r}
+set.seed(100)
+knn_model = train(fattyAcids, oilType, method = 'knn', tuneLength = 30, preProcess =c("center","scale"))
+knn_preds = predict(knn_model, fattyAcids)
+knn_cm = confusionMatrix(data = knn_preds, reference = oilType)
+knn = list(model = knn_model, predictions = knn_preds, confusion_matrix = knn_cm)
+```
+#Naive bayes
+```{r}
+nb_grid = expand.grid(fL = c(1,2), usekernel = c(T,F), adjust = T)
+set.seed(100)
+nb_model = train(fattyAcids, oilType, method = 'nb', tuneGrid = nb_grid)
+nb_preds = predict(nb_model, fattyAcids)
+nb_cm = confusionMatrix(data = nb_preds, reference = oilType)
+nb = list(model = nb_model, predictions = nb_preds, confusion_matrix = nb_cm)
+```
+```{r}
+oil_result = list(mda = mda, nnet = nnet, svm = svm, knn = knn)
+
+df = rbind( data.frame(name="MDA", Accuracy=oil_result$mda$confusion_matrix$overall[1]),
+            data.frame(name="NNET", Accuracy=oil_result$nnet$confusion_matrix$overall[1]),
+            data.frame(name="SVM", Accuracy=oil_result$svm$confusion_matrix$overall[1]),
+            data.frame(name="KNN", Accuracy=oil_result$knn$confusion_matrix$overall[1]))
+df
+```
+
+```{r}
+oil_result$nnet$confusion_matrix
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

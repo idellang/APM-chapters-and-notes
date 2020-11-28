@@ -1,0 +1,399 @@
+---
+title: "Chap12 - Discriminant Analysis and other linear classification models"
+author: "Me"
+date: "10/3/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+This section discusses the following R packages: APM, caret, glmnet, MASS, pamr, pls, pROC, rms, sparseLDA, and subselect
+
+Following the data splitting described, there are two dataframes with grant data: `training` contains pre 2008 data and 2008 holdout data set used to tune the model while data frame `testing` has only year 2008 and not used until later chapters. Vector called `pre2008` has the row indices of the 6633 trainign set prior to 2008
+
+Most of the predictors are binary. When the value was unkown, a specific dummy variable is created for this situation, such as `SponsorUnk`. Binary dummy variables are also created for the submission month and day of week.
+
+In addition, there exist count and continuous predictors such as frequencies of each role associated with the grant. `NumCI` is the number of chief investigator on the grant. Similar count predictors are also in the data such as number of people born within time frame, number born in certain region, and their degree status. The number of previously scuccessful and unsuccessful grants are enumerated with the predictors `Unsuccess.PS` and `Success.CI`. The publication information is stored in two ways. First, the totals for each role such as `B.CI` or `Astar.CI` are available as well the total counts across all the individuals
+
+The calendar day is stored as numeric variable
+Finally, class outcome is stored in class with levels successful and unsuccessful. 
+
+As previously discussed, there are two types of data, the full set of dummy variables and reduced set that was filtered with near zero variance variables and extremely correlated predictors
+
+
+```{r}
+library(tidyverse)
+library(AppliedPredictiveModeling)
+load("GrantData.RData")
+library(caret)
+```
+Two character vectors were created for the purpose of specifying either group
+```{r}
+length(predictors)
+head(predictors)
+
+length(predictorsNoNZV)
+```
+How can extreme collinearity problems be diagnosed? The `trix.matrix` function is subselect takes a square symmetric matrix and uses algorithm to eliminate linear combinations. For example, the reduced set has no issues
+```{r}
+reduced_cov_mat = cov(training[, predictorsNoNZV])
+library(subselect)
+trimming_results = trim.matrix(reduced_cov_mat)
+names(trimming_results)
+trimming_results$numbers.discarded
+```
+No discarded.
+
+However, if we apply the same function to the full set, several predictors are identified. 
+```{r}
+full_cov_mat = cov(training[, predictors])
+full_results = trim.matrix(full_cov_mat)
+full_results$names.discarded
+```
+Another function in the `caret` package called `findLinearCombos` follows a similar methodology but does not require a square matrix. 
+
+When developing models, train is used to tune paramaters on the basis of the ROC curve. To do this, a control function is needed to obtain results of interest. The caret function `trainControl` is used for this purpose. First, to compute area under ROC, the class probabilities must be generated. By default train only generates class predictions. The option `classProbs` can be specified when probabilities are needed. Also by default the overall accuracy and kappa statistics are used to evaluated the model. caret contains `twoClassSummary` to evaluate that calculates area under the curve, sensitivity, and specificity. To achieve these goals the syntax would be
+```{r}
+library(caret)
+ctrl = trainControl(summaryFunction = twoClassSummary, classProbs = T)
+```
+
+However, at the start of the chapter, a data splitting scheme was developed that the model on pre-2008 data and then used 2008 holdout data (in the training set) to tune the model. To do this, `train` must know exactly which samples to use when estimating parameters. The `index` argument of the tuning parameter to `trainControl` identifies these samples. For any resampling method, a set of holdout samples can be exactly specified. For example, with 10-fold CV, the exact samples to be excluded for each 10-folds are identified with this option. in this case, the index identifies the rows that correspond to pre 2008 data. The exact syntax should pacakge these rows in a list. Recall that the vector pre2008 contains the location of submitted prior to 2008. the call to train function is
+```{r}
+ctrl = trainControl(method = 'LGOCV', summaryFunction = twoClassSummary, 
+                    classProbs = T, index = list(TrainSet = pre2008))
+```
+
+Note that, once the tuning parameters have been chosen using year 2008 performance estimates, the final model is fit with all the grants in the training set including those from 2008. 
+
+FInally for illustrative purposes, we need to save predictions of the year 2008 grants based on pre-2008 model (i.e before the final model is refit with all of training data). The `savePredictions` argument accomplishes these results.
+```{r}
+ctrl = trainControl(method = 'LGOCV', summaryFunction = twoClassSummary, 
+                    classProbs = T, index = list(TrainSet = pre2008), savePredictions = T)
+```
+
+Since many of these models described in this text use random numbers, the seed for number generator is set prior to running each model so the computations can be reproduced. A seed value of 476 was randomly choses for this chapter
+
+## Linear Regression
+
+The `glm` function in base R is commonly used to fit logistic regression models. The syntax is similar to previous modeling functions that work formula method. Ex:
+```{r}
+levels(training$Class)
+
+model_fit = glm(Class ~ Day, 
+                # select rows for pre2008 data
+                data = training[pre2008,],
+                #family relates to distribution of data
+                family = binomial)
+
+model_fit
+```
+The `glm` function treats the second factor level as the event of interest. Since the slope is positive for the day of the year, it indicates an increase in rate of unsuccessful grant. To get probability of a successful grant, we subtract from 1
+```{r}
+success_prob = 1 - predict(model_fit, newdata = data.frame(Day = c(10, 150, 300, 350)),
+            ## glm does not predict the class but produce probability of event
+            type = 'response')
+success_prob
+```
+To add non linear terms for day of the year, the previous formula is augmented
+```{r}
+day_squared_model = glm(Class ~ Day + I(Day ^2), data = training[pre2008, ], family = binomial)
+day_squared_model
+```
+glm function does not have a formula method so creating models with large number of predictors takes a little more work. An alternate solution is shown below
+
+Another R function for logistic model is the pacakge called `rms` regression modeling strategies. THe `lrm` function is very similar to glm and includes helper functions. For example, a restricted cubic spline tool for fitting non linear functions of a predictor. For the day of the year:
+```{r}
+library(rms)
+rcs_fit = lrm(Class ~ rcs(Day), data = training[pre2008,])
+rcs_fit
+```
+The lrm function, like glm, models the probability of the second factor level. The bottom table in the output shows the p-values for different non linear components of the restricted cubic spline. Since hte pvalue for the first three is small, this indicates non linear relationship between the class and day should be used. The package contains another function, `Predict`, which quickly create prediction profile across one or more variables
+```{r}
+day_profile = Predict(rcs_fit, ## specify range of plot variable
+                      Day = 0:365, 
+                      ##flip prediction to get succesful grants
+                      fun = function(x) - x)
+plot(day_profile, ylab = 'Log Odds')
+```
+The fun argument changes the sign of prediction so that hte plot reflects the probability of successful grants. From this plot, it is apparent that a quadratic term for the day of year would approximate trends shown by the spline
+The `rms` package contains many more relevant functions, including resampling techniques for model validation and model visualization functions. 
+
+For large set of predictors, formula method for specifying model can be cumbersome. As in previous chapters, train function can efficiently fit and validate models. For logistic regression, train provides an interface to the glm function that bypasses a model formula, directly produces class predictions and calculates ROC curve and other metrics. 
+
+Prior to fitting the model, we augment dataset and predictors groups with squared day variable
+```{r}
+training$Day2 = training$Day^2
+predictors = c(predictors, 'Day2')
+predictorsNoNZV = c(predictorsNoNZV, 'Day2')
+```
+
+For the grant data, the code that fits a model with full predictor set is
+```{r}
+library(caret)
+set.seed(476)
+lr_full = train(training[,predictors], y = training$Class, 
+                method = 'glm', metric = 'ROC', trControl = ctrl)
+lr_full
+```
+
+Note that the top of this output reflects 8190 grants used, but the summary of sample sizes is 6633. THe latter number reflects the single set of pre2008 samples. The resampling results is actually the performance of 2008 holdout sets
+
+To create model with smaller predictor set
+```{r}
+set.seed(476)
+lr_reduced = train(training[,predictorsNoNZV], y = training$Class, 
+                   method = 'glm', metric = 'ROC', trControl = ctrl)
+lr_reduced
+```
+
+Like the LDA analysis, removal of near-zero variance predictors has a positive effect on the model fit. The predictions for holdout set is in the sub-object pred.
+
+```{r}
+head(lr_reduced$pred)
+```
+
+Note the column labeled parameter. When `train` saves predictions, it does for every tuning parameter. This column in the output is used to label model generated bby predictions. This version of logistic regression has no tuning parameters so parameter has single value none. From these data, confusion matrix can be computed
+```{r}
+confusionMatrix(data = lr_reduced$pred$pred, reference = lr_reduced$pred$obs)
+```
+These results match the values shown above for lr_reduced. ROC curve can be computed and plotted using pROC package
+```{r}
+library(pROC)
+
+reduced_roc = roc(response = lr_reduced$pred$obs, predictor = lr_reduced$pred$successful, levels = rev(levels(lr_reduced$pred$obs)))
+reduced_roc
+```
+```{r}
+plot(reduced_roc)
+```
+## Linear discriminant analysis
+A popular function for creating LDA models is the `lda` in MASS package. The input can be either a formula ,dataframe, or matrix of predictors and a grouping variable factor. We can fit lda as follows
+```{r}
+library(MASS)
+#center and scale the data first
+grant_preprocess = preProcess(training[pre2008, predictorsNoNZV])
+
+scaled_pre2008 = predict(grant_preprocess, newdata = training[pre2008, predictorsNoNZV])
+scaled_2008holdout = predict(grant_preprocess, newdata = training[-pre2008, predictorsNoNZV])
+
+lda_model = lda(x = scaled_pre2008, grouping = training$Class[pre2008])
+```
+
+Recall that because these data involve two classes, only 1 discriminant vector can be obtained. This discriminant vector is in the object model$scaling. The first six entries are
+```{r}
+head(lda_model$scaling)
+```
+This information provides information about predictors, relatinship among predictors, and if the data have been scaled and centered, then relative importance values. The discriminant vector is involved in prediction of samples, and MASS package simplifies this process through predict function. For grant dataset, the predictions are produced with syntax
+```{r}
+lda_holdout_preds = predict(lda_model, scaled_2008holdout)
+names(lda_holdout_preds)
+```
+The predicted class, posterior probability, and linear discriminant value are contained in this object, thus enabling the user to create confusion matrix of observed and predicted, distribution of posterior probabilities, distribution of discriminant values
+
+A direct implication of two class setting is that there is no training over the number of discriminant vectors to retain prediction. WHen working with data that contain more than two classes, the optimal number of linear discriminant vectors can be determined through the usual validation process. Trough lda function, the number of linear discriminants to retain prediction can be set with the dimen option of the predict function. Conventiently, this optimization process is automated with train function in caret package
+```{r}
+set.seed(476)
+lda_fit1 = train(x = training[,predictorsNoNZV], y = training$Class, method = 'lda', preProcess = c('center','scale'), metric = 'ROC',
+                 trControl = ctrl)
+lda_fit1
+```
+No formal tuning occurs because there are only two classes and thus only one discriminant vector. We can generate predicted classes and probabilities for test set in the usual manenr
+```{r}
+library(tidyverse)
+lda_test_classes = predict(lda_fit1, newdata = testing[,predictorsNoNZV])
+lda_test_probs = predict(lda_fit1, newdata = testing[,predictorsNoNZV], type = 'prob')
+```
+
+When the problem involves more than two classes and we desire to optimize over the number of discriminant vectors, then the train function will be set to method = 'lda2' and tuneLength set to maximum number of dimensions
+```{r}
+lda_roc = roc(response = lda_fit1$pred$obs, predictor = lda_fit1$pred$successful, levels = rev(levels(lda_fit1$pred$obs)))
+lda_roc
+```
+
+## Partial least squares discriminant analysis
+
+PLDSA can be performed using pslr function within the pls package by using a categorical matrix which defines the response categories. 
+The caret package contains a function `plsda` that can create the appropriate dummy variable PLS model for the data and then post process the raw model predictions to return class probabilities. The syntax is very similar to regression model code in sect 6.3. The main difference is a factor is used for the outcome
+FIt a model with the reduced predictor set
+```{r}
+plsda_model = plsda(x = training[pre2008, predictorsNoNZV], y = training[pre2008,'Class'], 
+                    ## data should be on same scale for PLS. scale option applies this preprocess step
+                    scale = T, 
+                    ##use bayes method to compute for probabilities
+                    probMethod = 'Bayes',
+                    ##specify number of components
+                    ncomp = 4)
+```
+
+Predict the 2008 holdout set
+```{r}
+pls_pred = predict(plsda_model, newdata = training[-pre2008, predictorsNoNZV], type = 'prob')
+```
+plsdamodel object inherits all same functions that would have resulted fron the object coming directly from pslr function. Because of this, other functions from pls package such as `loadings` or `scoreplot` can be used
+
+The `train` function can also be used with PLS in the classification setting. The following code evaluates the first ten PLS components with respect to the area under the ROC curve as well as automatically centers and scales the predictors prior to model fitting and sample prediction
+```{r}
+set.seed(476)
+pls_fit2 = train(x = training[,predictorsNoNZV], y = training$Class, 
+                 method = 'pls', tuneGrid = expand.grid(.ncomp = 1:10), 
+                 preProcess = c('center','scale'), 
+                 metric = 'ROC', 
+                 trControl = ctrl)
+pls_fit2
+```
+The basic predict call evalutes new samples. type = 'prob' returns class probabilities
+```{r}
+pls_test_classes = predict(pls_fit2, newdata = testing[,predictorsNoNZV])
+pls_test_probs = predict(pls_fit2, newdata = testing[,predictorsNoNZV], type = 'prob')
+head(pls_test_probs)
+```
+Computing variable importance
+```{r}
+pls_imp_grant = varImp(pls_fit2, scale = F)
+plot(pls_imp_grant, top = 20, scales = list(y = list(cex = .9)))
+```
+## Penalized models
+The primary package for penalized logistic regression is through glmnet although the nexct chapter describes how to fit similar models using neural networks. The `glmnet` is similar to enet function described previously. The main arguments correspond to the data x: matrix of predictors and y factor of class. Additionally, the family argument is related to distribution of outcome. For two classes, using `family = 'binomial`  corresponds to logistic regression and when there are three or more classes `family = multinomial` is appropriate
+
+The  function will automatically select a sequence of values for the amount of regularization, although the user can select their own values with lambda option. Recall the type of regularization is determined by mixing parameter alpha. glmnet defaults alpha = 1, corresponding to complete lasso
+
+the predict function for glmnet predicts different types of values including the predicted class, which predictors are used in the model and or regression parameters. For example:
+```{r}
+library(glmnet)
+glmnet_model = glmnet(x = as.matrix(training[,predictors]), y = training$Class, family = 'binomial')
+```
+compute predictions for three different levels of regularization. Note that the results are not factors
+```{r}
+predict(glmnet_model, newx = as.matrix(training[1:5, predictors]), s = c(0.05, .1, 2), type = 'class')
+```
+Which predictors were used in the model
+```{r}
+predict(glmnet_model, newx = as.matrix(training[1:5, predictors]), 
+        s = c(.05, .1, .2), type = 'nonzero')
+```
+As a side note, the glmnet package has function called `auc`. if the pROC is loaded priort to loading glmnet, this message will appear : 'The following object(s) are masked from package:pROC: auc'. If this function is invoked at this point, R will be unclear on which to use. There are two different approaches in dealing with this issue
+1. detach one of the packages
+2. using namespace convention pROC::auc or glmnet::auc
+
+Another potential isntance of this issue is described below
+
+Tuning the model using AUC under ROC curve can be accomplished with train
+```{r}
+glmnet_grid = expand.grid(.alpha = c(0, .1, .2, .4, .6, .8, 1),
+                          .lambda = seq(.01, 2, length = 20))
+
+set.seed(476)
+glm_tune = train(training[, predictors], y = training$Class, method = 'glmnet', 
+                 tuneGrid = glmnet_grid, preProcess = c('center','scale'), 
+                 metric = 'ROC', trControl = ctrl)
+```
+
+The heat map in top panel was produced using the following code
+```{r}
+plot(glm_tune, plotType ='level')
+```
+
+Penalized LDa can be found in `sparseLDA` and `penalizedLDA` packages. The main function of sparselda is called `sda`. THe function has an argument for idge parameter called lambda. The lasso penalty can be stated in two possible ways with the argument stop. Magnitude of lasso is controlled using a positive number e.g stop = .01 or alternatively the number of retained predictors can be chosen by negative integer e.g stop = -6. FOr example
+```{r}
+library(sparseLDA)
+sparse_lda_model = sda(x = as.matrix(training[,predictors]), y = training$Class, 
+                       lambda = 0.01, stop  = -6)
+sparse_lda_model
+```
+
+The method = 'sparseLDA' can be used with train. In this case, train will tune over lambda and number of retained predictors.
+
+## Nearest Shrunken Centroids
+
+The original R implementation for this model can be found in `pamr` package. ANother package `rda` contains extension to the model
+
+The syntax of the functions in the pamr package is nonstandard. The function `pamr.train` takes input as a single list with object components x and y. The usual convention for datasets is to have samples in rows and different columns for predictors. pamr.train requires training set predictors to be encoded in the opposite format where rows and columns are samples. For the grant data, the input data would be in a format below
+```{r}
+#switch dimensions using t to transpose data
+# also converts dataframe to matrix
+input_data = list(x = t(training[,predictors]), y = training$Class)
+
+#the basic syntax is
+library(pamr)
+nsc_model = pamr.train(data = input_data)
+```
+By default, the function chooses 30 appropriate shrinkage values to evaluate. There are options to use speficiv values for the shrinkage amount, the prior probabilities and other aspects of the model. The function pamr.predict generates predictions on new samples as well as determines which specific predictors were used in the model for a given shrinkage value. For example, to specify shrinkage of 5
+```{r}
+example_data = t(training[1:5, predictors])
+pamr.predict(nsc_model, newx = example_data, threshold = 5)
+```
+Which predictors were used at this threshold? The predict function shows the column numbers of retained predictors
+```{r}
+thresh17_vars = pamr.predict(nsc_model, newx = example_data, threshold = 17, type = 'nonzero')
+predictors[thresh17_vars]
+```
+The package also contains functions for kfold CV to choose appropriate amount of shrinkage but is restricted to single type of resampling. The train sytnax is
+```{r}
+nsc_grid = data.frame(.threshold = 0:25)
+set.seed(476)
+nsc_tune = train(x = training[,predictors], y = training$Class, 
+                 method = 'pam', preProcess = c('center','scale'), tuneGrid = nsc_grid, 
+                 metric = 'ROC', trControl = ctrl)
+```
+
+This approach provides more options for model tuning (.eg using area under the curve) as well as consistent syntax. The predict function for train does not require user manually specified shrinkage because the optimal amount is used. 
+The predictors will list predictors used in the equation (at the optimal threshold by train). 36 predictors were selected
+```{r}
+predictors(nsc_tune)
+```
+Also varImp return variable importance on the distance between class centroid and overall centroid
+```{r}
+varImp(nsc_tune, scale = F)
+```
+In these data, the sign of difference indicates the dierection of impact of the predictor. For example, when contract band value is unknown, only small percentage of grants are successful. negative sign means drop in event rate. Conversely if the sponsor is known, success rate is high. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

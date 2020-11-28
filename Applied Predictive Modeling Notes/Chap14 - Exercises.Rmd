@@ -1,0 +1,169 @@
+---
+title: "Chap14 - Exercises"
+author: "Me"
+date: "10/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+#2
+Churn data
+a - fit few basic trees. Should the area code be encoded as dummy or grouped?
+b - does bagging imrpove performance?
+c - apply rule based models. How is the performance? Do the rules make sense?
+d - use lift to compare tree or rule models to the best techniques
+
+```{r}
+library(caret)
+library(AppliedPredictiveModeling)
+library(pROC)
+library(C50)
+```
+```{r}
+data = read.csv('WA_Fn-UseC_-Telco-Customer-Churn.csv')
+```
+
+```{r}
+data = data[,-1]
+```
+
+```{r}
+X_group_categories = data[,-20]
+y = data[,20]
+y = factor(y)
+```
+
+Look for zero variance cols
+```{r}
+nearZeroVar(X_group_categories)
+```
+Convert grouped predictors into binary (one vs all) using caret function `dummyVars`
+```{r}
+grouped_predictors_formula = paste('~', paste(colnames(X_group_categories), collapse = '+'), sep = '')
+grouped_to_one_vs_all = dummyVars(grouped_predictors_formula, data = X_group_categories)
+
+X_OVA_categories = predict(grouped_to_one_vs_all, newdata = X_group_categories)
+```
+
+setup train control arguments
+```{r}
+ctrl = trainControl( summaryFunction=twoClassSummary, classProbs=TRUE )
+```
+
+## Grouped category for all factors
+```{r}
+set.seed(346)
+rpart_group_model = train(X_OVA_categories, y, method = 'rpart', tuneLength = 30, metric = 'ROC', trControl = ctrl)
+rpart_group_preds = predict(rpart_group_model, type = 'prob')
+rpart_group_roc = roc(response = y, predict = rpart_group_preds[,1])
+rpart_group_auc = rpart_group_roc$auc[1]
+```
+
+One vs all categories for all factors
+```{r}
+set.seed(346)
+rpart_ova_model = train(X_OVA_categories, y, method = 'rpart', tuneLength = 30, metric = 'ROC', trControl = ctrl)
+rpart_ova_preds = predict(rpart_ova_model, type = 'prob')
+rpart_ova_roc = roc(response = y, predict = rpart_ova_preds[,1])
+rpart_ova_auc = rpart_ova_roc$auc[1]
+```
+
+## Boosting
+```{r}
+gbm_grid = expand.grid(interaction.depth = seq(1,7, by =2), n.trees = seq(100, 1000, by = 100), shrinkage = c(.01, 05,.1), n.minobsinnode = 10)
+set.seed(345)
+gbm_group_model = train(X_group_categories, y, method = 'gbm', tuneGrid = gbm_grid, metric = 'ROC', trControl = ctrl, verbose = F)
+```
+
+
+
+## Question 2
+
+```{r}
+library(caret)
+library(AppliedPredictiveModeling)
+data(hepatic)
+```
+
+a - fit a random forest using CART and conditional inference trees to chemistry and using kappa statistics as follows. 
+
+```{r}
+set.seed(714)
+indx = createFolds(injury, returnTrain = T)
+ctrl = trainControl(method = 'cv', index = indx)
+mtry_values = c(5,10,25,50,75,100)
+rf_cart = train(chem, injury, method = 'rf', metric = 'Kappa', ntree = 1000, tuneGrid = data.frame(.mtry = mtry_values))
+```
+
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+```{r}
+rf_yhat = predict(rf_cart, chem)
+rf_cart_cm = confusionMatrix(data = rf_yhat, reference = injury)
+```
+#cforest model
+```{r}
+set.seed(714)
+rfc_forest = train(chem, injury, method = 'cforest', metric = 'Kappa', tuneGrid = data.frame(.mtry= mtry_values))
+rfc_yhat = predict(rfc_forest, chem)
+rfc_forest_cm  = confusionMatrix(data = rfc_yhat, reference = injury)
+```
+
+```{r}
+print( c( rf_cart_cm$overall[2], rfc_forest_cm$overall[2] ) )
+```
+Time between
+```{r}
+print( rf_cart$times$everything )
+print( rfc_forest$times$everything )
+```
+```{r}
+varImp(rf_cart)
+varImp(rfc_forest)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

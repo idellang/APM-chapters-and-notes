@@ -1,0 +1,158 @@
+---
+title: "Chap2 - Short tour for predictive models"
+author: "Me"
+date: "8/25/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+
+```{r}
+library(AppliedPredictiveModeling)
+data(FuelEconomy)
+```
+
+
+Format data for plotting against engine displacement
+
+```{r}
+library(dplyr)
+library(tidyr)
+#sort by engine displacement
+cars2010 = cars2010[order(cars2010$EngDispl),]
+cars2011 = cars2010[order(cars2010$EngDispl),]
+
+#combine the data into one data frame.
+cars2010a = cars2010 %>%
+  mutate(Year = '2010 model year')
+
+cars2011a = cars2011 %>%
+  mutate(Year = '2011 model year')
+
+#combine the data
+carsdata = cars2010a %>%
+  rbind(cars2011a)
+
+#plot
+library(lattice)
+xyplot(FE ~ EngDispl|Year, carsdata, 
+       xlab = 'Engine Displacement',
+       ylab = 'Fuel Efficiency',
+       between = list(x = 1.2))
+
+
+```
+
+```{r}
+library(ggplot2)
+ggplot(data = carsdata, aes(x = EngDispl, y = FE))+
+  geom_point()+
+  facet_wrap(~Year)
+```
+
+Fit a linear model and conduct 10 fold CV to estimate error
+
+```{r}
+library(caret)
+set.seed(1)
+
+lm1Fit = train(FE ~ EngDispl, data = cars2010, 
+               method = 'lm', trControl = trainControl(method = 'cv'))
+summary(lm1Fit)
+```
+```{r}
+cars2010 %>%
+  mutate(predFE = predict(lm1Fit,cars2010)) %>%
+  ggplot()+
+  geom_point(aes(EngDispl, FE))+
+  geom_line(aes(EngDispl, predFE))
+
+```
+
+Fit a quadratic model
+```{r}
+#Create a sqaured variable of ED
+cars2010 = cars2010 %>%
+  mutate(ED2 = EngDispl^2)
+
+cars2011 = cars2011 %>%
+  mutate(ED2 = EngDispl^2)
+
+#fit quadratic model
+lm2Fit = train(FE ~ EngDispl + ED2, data = cars2010,
+               method = 'lm', trControl = trainControl(method = 'cv'))
+summary(lm2Fit)
+```
+The quadratic model produced lower RMSE
+
+Let's plot the quadratic model
+
+```{r}
+cars2010 = cars2010 %>%
+  mutate(q_pred = predict(lm2Fit, cars2010))
+
+ggplot(cars2010)+
+  geom_point(aes(EngDispl, FE))+
+  geom_line(aes(EngDispl, q_pred))
+```
+Might over estimate the values on high EngDispl
+
+Fit a MARS model 
+```{r}
+library(earth)
+set.seed(1)
+marsFit = train(FE ~ EngDispl,
+                data = cars2010,
+                method = 'earth',
+                tuneLength = 15,
+                trControl = trainControl(method = 'cv'))
+summary(marsFit)
+```
+
+```{r}
+plot(marsFit)
+```
+
+5 Terms has the lowest RMSE
+
+Let's predict the test data for each model
+```{r}
+library(readr)
+cars2011$lm1 = predict(lm1Fit, cars2011)
+cars2011$lm2 = predict(lm2Fit, cars2011)
+cars2011$mars = predict(marsFit, cars2011)
+```
+
+
+```{r}
+cars2011 %>%
+  gather(key = 'model', value = 'value', lm1, lm2, mars) %>%
+  ggplot()+
+  geom_point(aes(EngDispl, FE))+
+  geom_line(aes(EngDispl, value, color = model))
+```
+
+Get test set performance value via caret's postResample function
+
+```{r}
+postResample(pred = cars2011$lm1, obs = cars2011$FE)
+postResample(pred = cars2011$lm2, obs = cars2011$FE)
+postResample(pred = cars2011$mars, obs = cars2011$FE)
+```
+Lowest error for Mars
+
+
+
+
+
+
+
+
+
+
+

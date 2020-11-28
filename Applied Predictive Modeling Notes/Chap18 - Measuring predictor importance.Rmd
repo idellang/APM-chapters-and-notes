@@ -1,0 +1,191 @@
+---
+title: "Chap18 - Measuring Variable Importance"
+author: "Me"
+date: "10/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This section uses function from the following R packages: APM, caret, CORElearn, minerva, pROC, and randomForest.
+
+The cell segmentation data is in the caret package. The solubility data can be found in the APM package. 
+
+## Numeric outcomes
+
+To estimate correlations between predictors and outcome, the cor function is used
+```{r}
+library(AppliedPredictiveModeling)
+data(solubility)
+cor(solTrainXtrans$NumCarbon, solTrainY)
+```
+To get results for all the numeric predictors, the apply function can be used to make same calculation across all columns
+```{r}
+library(purrr)
+#determine which columns have FP
+fp_cols = grepl('FP', names(solTestXtrans))
+
+#exclude to get numeric predictor names
+numeric_preds = names(solTestXtrans)[!fp_cols]
+
+corr_values = apply(solTrainXtrans[,numeric_preds], MARGIN = 2, FUN = function(x,y) cor(x,y), y = solTrainY)
+corr_values
+```
+To obtain rank correlation, the `corr` function has an option method = 'spearman'
+
+The LOESS smoother can be accessed by loess function in the stats library. The formula method is used to specify the model:
+```{r}
+smoother = loess(solTrainY ~ solTrainXtrans$NumCarbon)
+smoother
+```
+The lattice function `xyplot` is convenient for displaying LOESS fit
+```{r}
+library(caret)
+xyplot(solTrainY ~ solTrainXtrans$NumCarbon, type = c('p','smooth'))
+```
+The `caret` function `filterVarImp` with the `nonpara = T` option (for non parametric regression) creates a LOESS model for each predictor and quantifies relationship of outcome
+```{r}
+loess_results = filterVarImp(x = solTrainXtrans[,numeric_preds], y = solTrainY, nonpara = T)
+loess_results
+```
+
+The `minerva` package can be used to calculate MIC statistics between predictors and outcome. THe `mine` function computes for several quantities including MIC
+```{r}
+library(minerva)
+mic_values = mine(solTrainXtrans[,numeric_preds], solTrainY)
+names(mic_values)
+mic_values$MIC
+```
+
+For categorical predictors, t.test function computes for difference in means and the p-value. For one predictor
+```{r}
+t.test(solTrainY~solTrainXtrans$FP044)
+```
+This approach can be extended using apply in a manner similar to correlation
+```{r}
+get_tstats = function(x,y){
+  t_test = t.test(y ~ x)
+  out = c(t_stat = t_test$statistic, p = t_test$p.value)
+  out
+}
+
+t_vals = apply(solTrainXtrans[,fp_cols], MARGIN = 2, FUN = get_tstats, y = solTrainY)
+as.data.frame(t(t_vals))
+```
+
+## Categorical outcomes
+
+
+The filtervarImp funciton also calculates ROC when outcome variable is a factor
+```{r}
+library(caret)
+data("segmentationData")
+cell_data = subset(segmentationData, Case == 'Train')
+cell_data$Case = cell_data$Cell = NULL
+
+#class data is in hte first column
+head(names(cell_data))
+```
+```{r}
+roc_values = filterVarImp(x = cell_data[,-1], y = cell_data$Class)
+head(roc_values)
+```
+
+This is a simpler wrapper for the functions roc and auc in the pROc package. When there are three ore more classes, `filterVarImp` will compute pROC curves for each class versus the others and return the largest AUC
+
+The `Relief` statistics can be calculated using the `CORElearn` package. The function `attrEval` will calculate several version of relief (using estimator option)
+
+```{r}
+library(CORElearn)
+relief_values = attrEval(Class ~., data = cell_data, 
+                         ## there are many relief methods. ??attrEval
+                         estimator = 'ReliefFequalK',
+                         # number of instances tested:
+                         ReliefIterations = 50)
+head(relief_values)
+```
+This function can also be used to calculate gain ratio, gini index, and other scores. To use a permutation approach to investigate the observed values of ReliefF statistic, the APM has a package permuteRelief
+```{r}
+perm = permuteRelief(x = cell_data[,-1], y = cell_data$Class, 
+                     nperm = 500, estimator = 'ReliefFequalK', 
+                     ReliefIterations = 50)
+head(perm$permutations)
+```
+
+The permutation distributions for hte ReliefF scores can be helpful. Histograms can be created with the syntax
+```{r}
+histogram(~ value|Predictor, data = perm$permutations)
+```
+
+Also, the standardized version of the scores are in the sub-object called `standardized` and represent the number of standard deviations that observed ReliefF values are from the center of permuted distribution
+```{r}
+head(perm$standardized)
+```
+The MIC statistics can be computed as before but with binary variable encoding
+```{r}
+mic_values2 = mine(x = cell_data[,-1], y = ifelse(cell_data$Class=='PS', 1, 0))
+head(mic_values2$MIC)
+```
+To compute for odds ratio and statistical test for association, the `fisher.test`  in the `stats` library can be applied. To calculate these statistics for the grant object
+```{r}
+load('grantData.RData')
+sp62_table = table(training[pre2008,'Sponsor62B'], 
+                   training[pre2008,'Class'])
+sp62_table
+```
+```{r}
+fisher.test(sp62_table)
+```
+When the predictor has more than two classes, a single odds ratio cannot be computed but the p-value association can still be utilized:
+```{r}
+ci_table = table(training[pre2008, 'CI.1950'], 
+                 training[pre2008, 'Class'])
+```
+```{r}
+fisher.test(ci_table)
+```
+In some cases. Fisher's exact test may be computationally prohibitive. In thse cases, chisq.test for association can be computed
+```{r}
+day_table = table(training[pre2008, 'Weekday'], 
+                  training[pre2008, 'Class'])
+day_table
+```
+
+```{r}
+chisq.test(day_table)
+```
+
+## Model based importance scores
+
+Many models have built in approaches for measuring the aggregate effect of predictors in the model. The caret package contains a general class for calculating or returning these values for 27 R classes. To illustrate, random forest was fit to segmentation data
+
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+```{r}
+library(randomForest)
+set.seed(971)
+rf_imp = randomForest(Class ~., data = segmentationData, ntree = 2000, importance = T)
+```
+The random forest package contains a function called importance. the `varImp` function standardizes values across models
+```{r}
+head(varImp(rf_imp))
+```
+
+
+Note that some models return a separate score for each class. When using `train` function. The varImp function executes the appropriate code based on the value of method argument. 
+
+
+
+
+
+
+
+
+
+

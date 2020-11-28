@@ -1,0 +1,42 @@
+---
+title: "Chap19 - Factors that can affect model performance"
+author: "Me"
+date: "10/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Illustrate algo 20.1, R caret package will be referenced
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

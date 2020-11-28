@@ -1,0 +1,291 @@
+---
+title: "Chap16 - Exercise"
+author: "Me"
+date: "10/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+#1
+The adult dataset at the UCI machine learning repo is derived from the census records. In these data, the goal is to predict whether a persons income was large or small. The predictors include educational level, type of job, capital gains/loss, work hours per week, native country, and so on. After filtering the data where the class is unknown, there were 48882 records remaning. The majority of the data have small income level (75.9). The data are contained in arules package and the appropriate version can be loaded using data (AdultUCI)
+
+a - load the data and investigate the predictors for distribtuin and potential correlation
+b - determine an appropriate split
+c - build several classification models. Do results favor small income class
+d - is there a good tradeoff that can be made between sensitivity and specificity
+e - use sampling methods to improve model fit
+f - do cost-sensitive models improve perfomrance
+
+```{r}
+library(arules)
+data(AdultUCI)
+library(caret)
+```
+
+```{r}
+#uninformative predictor
+AdultUCI$fnlwgt = NULL
+```
+
+Drop any samples that dont have complete records
+```{r}
+AdultUCI = AdultUCI[complete.cases(AdultUCI), ]
+```
+
+convert some of the column names
+```{r}
+colnames( AdultUCI ) = as.character( lapply( colnames( AdultUCI ), function(x){ gsub("-","_",x) } ) )
+```
+
+Look at number of levels with each factor
+```{r}
+print( levels( AdultUCI$workclass ) ) # 8 levels
+print( levels( AdultUCI$education ) ) # 16 levels
+print( levels( AdultUCI$marital_status ) ) # 7 levels
+print( levels( AdultUCI$occupation ) ) # 14 levels
+print( levels( AdultUCI$relationship ) ) # 6 levels
+print( levels( AdultUCI$race ) ) # 5 levels
+print( levels( AdultUCI$sex ) ) # 2 levels (of course)
+print( levels( AdultUCI$native_country ) ) # 41 levels
+print( levels( AdultUCI$income ) ) # 2 levels small & large
+```
+```{r}
+table(AdultUCI$income)
+```
+
+```{r}
+table(AdultUCI$income)/ sum(table(AdultUCI$income))
+```
+Break the dataset into training/eval/testing
+```{r}
+set.seed(156)
+split1 = createDataPartition(AdultUCI$income, p = .7)[[1]]
+
+T_split1 = table(AdultUCI$income[split1])
+T_split1/sum(T_split1)
+```
+```{r}
+other = AdultUCI[-split1,]
+training = AdultUCI[split1,]
+```
+
+Split 'other' to evaluation and test set
+```{r}
+split2 = createDataPartition(other$income, p = 1/3)[[1]]
+evaluation = other[split2, ]
+testing = other[-split2,]
+```
+
+```{r}
+zero_cols = nearZeroVar(training[,-14])
+cn = colnames(training)
+cn[zero_cols]
+```
+Drop feature native country
+```{r}
+training$native_country = NULL
+evaluation$native_country = NULL
+testing$native_country = NULL
+```
+
+```{r}
+plot(density(training$capital_gain))
+```
+
+```{r}
+boxplot( capital_gain ~ income, data=training, main="captial gain as a function of age" )
+boxplot( capital_loss ~ income, data=training, main="captial loss as a function of age" )
+boxplot( hours_per_week ~ income, data=training, main="hours per week as a function of age" )
+```
+Look at correlation of predictors that are numeric
+```{r}
+cor( training[ , c("age", "education_num", "capital_gain", "capital_loss", "hours_per_week") ] )
+```
+## Build models
+
+wrapper functions for performacne measures
+```{r}
+fiveStats = function(...) c(twoClassSummary(...), defaultSummary(...))
+fourStats = function( data, lev=levels(data$obs), model=NULL ){
+    accKapp = postResample( data[, "pred"], data[, "obs"] )
+    out = c( accKapp, sensitivity(data[, "pred"], data[, "obs"], lev[1]), specificity(data[, "pred"], data[, "obs"], lev[2]) )
+    names(out)[3:4] = c("Sens", "Spec")
+    out
+}
+```
+
+Controls
+```{r}
+ctrl = trainControl( method="cv", number=5, classProbs=TRUE, summaryFunction=fiveStats, verboseIter=TRUE )
+
+ctrlNoProb = ctrl
+ctrlNoProb$classProbs = FALSE
+ctrlNoProb$summaryFunction = fourStats
+```
+
+```{r}
+set.seed(1410)
+rf_fit = train(income ~ ., data = training, method = 'rf', trControl= ctrl, ntree = 500, tuneLength = 5, metric = 'ROC')
+```
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+
+```{r}
+set.seed(1410)
+lr_fit = train(income ~ ., data = training, method = 'glm', trControl = ctrl, metric = 'ROC')
+```
+
+```{r}
+set.seed(1410)
+fda_fit = train(income ~. , data = training, method = 'fda', tuneGrid=  data.frame(.degree = 1, .nprune = 1:25), trControl = ctrl, metric = 'ROC')
+```
+
+Results
+```{r}
+res = matrix( data=c( mean( rf_fit$resample$ROC ), mean( rf_fit$resample$Spec ), mean( rf_fit$resample$Sens ),
+                      mean( lr_fit$resample$ROC ), mean( lr_fit$resample$Spec ), mean( lr_fit$resample$Sens ) ),
+    nrow=2, ncol=3, byrow=T )
+res = data.frame( res )
+rownames(res) = c("RF", "LR" )
+colnames(res) = c("AUC", "Spec", "Sens" )
+print(res)
+```
+
+Look at the predictions for each model
+```{r}
+eval_results = data.frame(income = evaluation$income)
+eval_results$RF = predict(rf_fit, newdata = evaluation, type = 'prob')[,1]
+eval_results$LR = predict(lr_fit, newdata = evaluation, type = 'prob')[,1]
+eval_results
+```
+
+```{r}
+library(pROC)
+rf_roc = roc(eval_results$income, eval_results$RF, levels = rev(levels(eval_results$income)))
+lr_roc = roc(eval_results$income, eval_results$LR, levels = rev(levels(eval_results$income)))
+```
+
+```{r}
+plot(rf_roc, legacy.axes = T, col = 'red')
+plot(lr_roc, legacy.axes = T, add = T, col = 'blue')
+```
+Lift plots
+```{r}
+labs = c(RF = 'random forest', LR = 'Logistic Reg')
+lift1 = lift(income ~ RF + LR, data = eval_results, labels = labs )
+xyplot(lift1)
+```
+
+
+Alternate cutoffs
+```{r}
+baseline = coords(lr_roc, x = .5, input = 'threshold')
+lr_thresh_ctopleft = coords(lr_roc, x = 'best', best.method = 'closest.topleft')
+lr_thresh_youden = coords(lr_roc, x = 'best', best.method = 'youden')
+```
+
+## Sampling methods
+
+Upsampling
+```{r}
+set.seed(1103)
+upsample_training = upSample(x = training[,-13], y = training$income, yname = 'income')
+table(upsample_training$income)
+```
+```{r}
+lr_fit = train( income ~ ., data=upsample_training, method="glm", trControl = ctrl, metric = "ROC" )
+lr_fit
+```
+```{r}
+lr_results = predict(lr_fit, evaluation, type = 'prob')[,1]
+lr_roc = roc(evaluation$income, lr_results, levels = levels(evaluation$income))
+```
+```{r}
+baseline = coords(lr_roc, x = .5, input = 'threshold')
+lr_ctopleft = coords(lr_roc, x = 'best', best.method = 'closest.topleft')
+```
+
+#Cost sensitive models
+
+```{r}
+library(kernlab)
+set.seed(1157)
+sigma = sigest(income ~., data = training, frac = .75)
+svm_grid = data.frame(.sigma = sigma[2], .C = 2^seq(-6,1, length = 10))
+```
+```{r}
+set.seed(1401)
+svm_wts = train(income ~., data = training, method = 'svmRadial', tuneGrid = svm_grid, preProcess = c('center','scale'), 
+                class.weights = c(large = 10, small =1), 
+                metric = 'Sens',
+                trControl = ctrlNoProb )
+svm_wts
+```
+
+```{r}
+svm_wts_preds = predict(svm_wts, newdata = evaluation)
+svm_wts_results = c(sensitivity(data = svm_wts_preds, reference = evaluation$income, positive = 'large'), 
+                    specificity( data=svm_wts_preds, reference=evaluation$income, postive="large" ) )
+```
+
+
+Cost sensitive CART models
+```{r}
+cost_matrix = matrix(c(0,1,10,0), ncol = 2) # 10 fold increase on false negative
+rownames(cost_matrix) = levels(training$income)
+colnames(cost_matrix) = levels(training$income)
+cost_matrix
+```
+
+```{r}
+library(rpart)
+set.seed(1401)
+cart_cost = train(x = training[,-13], y = training$income, method = 'rpart', tuneLength = 10, parms = list(loss = cost_matrix), metric = 'Kappa',
+                  trControl = ctrlNoProb)
+cart_cost
+```
+
+```{r}
+cart_pred = predict(cart_cost, newdata = evaluation)
+cart_results = c( sensitivity( data=cart_pred, reference=evaluation$income, postive="large" ),
+                  specificity( data=cart_pred, reference=evaluation$income, postive="large" ) )
+```
+
+## Cost sensitive C5.0 model
+
+```{r}
+c5_matrix = matrix(c(0,10,1,0), ncol = 2)
+rownames(c5_matrix) = levels(training$income)
+colnames(c5_matrix) = levels(training$income)
+```
+
+```{r}
+library(C50)
+set.seed(1401)
+C5_cost = train(x = training[,-13], y = training$income, method = 'C5.0', tuneLength = 10, cost = c5_matrix, metric = 'Kappa', trControl = ctrlNoProb)
+```
+
+```{r}
+C5_predictions = predict( C5_cost, newdata=evaluation )
+C5_results = c( sensitivity( data=C5_predictions, reference=evaluation$income, postive="large" ), 
+                specificity( data=C5_predictions, reference=evaluation$income, postive="large" ) )
+```
+
+
+
+
+
+
+
+
+
+

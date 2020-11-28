@@ -1,0 +1,507 @@
+---
+title: "Chap7- Exercise"
+author: "Me"
+date: "9/25/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(caret)
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+
+#1
+Simulate a single predictor and non linear relationship. Investigate the relationship between cost and kernel parameters for a support vector machine
+```{r}
+set.seed(100)
+x = runif(100, min = 2, max = 10)
+y = sin(x) + rnorm(length(x)) * .25
+sin_data = data.frame(x = x, y = y)
+data_grid = data.frame(x = seq(2, 10, length = 100))
+```
+
+
+a - fit different models using radial basis function and fit different values of cost (c) and e. plot the curve. For example:
+```{r}
+library(kernlab)
+
+rbfSVM = ksvm( x=x, y=y, data=sin_data, kernel="rbfdot", kpar="automatic", C=1, epsilon=0.1 )
+svm_pred = predict(rbfSVM, newdata = data_grid)
+plot(x,y)
+points(data_grid$x, svm_pred[,1], type = 'l')
+```
+A large value of sigma
+```{r}
+rbfSVM = ksvm(x =x, y = y, data = sin_data, kernel = 'rbfdot', kpar = list(sigma = 100), C = 1, epsilon = .1)
+svm_pred = predict(rbfSVM, newdata = data_grid)
+plot(x,y)
+points(data_grid$x, svm_pred[,1], type = 'l')
+```
+Higher cost triess to fit all the data
+
+Try a small value for sigma
+```{r}
+rbfSVM = ksvm(x =x, y = y, data = sin_data, kernel = 'rbfdot', kpar = list(sigma = 1e-2), C = 1, epsilon = .1)
+svm_pred = predict(rbfSVM, newdata = data_grid)
+plot(x,y)
+points(data_grid$x, svm_pred[,1], type = 'l')
+```
+A very large value of C should overfit
+```{r}
+rbfSVM = ksvm(x =x, y = y, data = sin_data, kernel = 'rbfdot', kpar = 'automatic', C = 10^7, epsilon = .1)
+svm_pred = predict(rbfSVM, newdata = data_grid)
+plot(x,y)
+points(data_grid$x, svm_pred[,1], type = 'l')
+```
+A very small value of cost
+```{r}
+rbfSVM = ksvm(x =x, y = y, data = sin_data, kernel = 'rbfdot', kpar = 'automatic', C = 10^-2, epsilon = .1)
+svm_pred = predict(rbfSVM, newdata = data_grid)
+plot(x,y)
+points(data_grid$x, svm_pred[,1], type = 'l')
+```
+A large value of epsilon
+```{r}
+rbfSVM = ksvm(x =x, y = y, data = sin_data, kernel = 'rbfdot', kpar = 'automatic', C = 1, epsilon = .5)
+svm_pred = predict(rbfSVM, newdata = data_grid)
+plot(x,y)
+points(data_grid$x, svm_pred[,1], type = 'l')
+```
+Low epsilon
+```{r}
+rbfSVM = ksvm(x =x, y = y, data = sin_data, kernel = 'rbfdot', kpar = 'automatic', C = 1, epsilon = .001)
+svm_pred = predict(rbfSVM, newdata = data_grid)
+plot(x,y)
+points(data_grid$x, svm_pred[,1], type = 'l')
+```
+It seems that the cost has the highest effect on model flexibility
+
+#2 
+Friedman introduced several benchmark datasets create by simulation. One of these simulation used a non linear equation to create the data. The package mlbench contains function called mlbench.friedman1 that simulates these data
+```{r}
+library(mlbench)
+set.seed(200)
+
+training_data = mlbench.friedman1(200, sd = 1)
+
+#convert x data from a matrix to a dataframe. this will give the column names
+training_data$x = data.frame(training_data$x)
+
+##look at the data
+featurePlot(training_data$x, training_data$y)
+```
+This creates a list with a vector 'y' and a matrix of predictors 'x'. Also simulate large test set to estimate true error rate
+```{r}
+test_data = mlbench.friedman1(500, sd = 1)
+test_data$x = data.frame(test_data$x)
+```
+
+Tune several models
+```{r}
+knn_model = train(x = training_data$x, y = training_data$y, method = 'knn', preProcess = c('center','scale'), tuneLength = 10)
+knn_model
+```
+```{r}
+knn_pred = predict(knn_model, newdata = test_data$x)
+postResample(knn_pred, test_data$y)
+```
+A neural network model
+```{r}
+nn_grid = expand.grid(.decay = c(0, .01, .1), .size = 1:10, .bag = F)
+set.seed(0)
+nn_model = train(x = training_data$x, y = training_data$y, method = 'nnet', preProcess = c('center','scale'), 
+                 linout = T, trace = F, MaxNWts = 10 * (ncol(training_data$x)+1) + 10 +1, maxit = 500)
+nn_model
+plot(nn_model)
+```
+```{r}
+nn_pred = predict(nn_model, newdata = test_data$x)
+postResample(nn_pred, test_data$y)
+```
+Averaged neural network model
+```{r}
+set.seed(0)
+avnnet_model = train(x = training_data$x, y = training_data$y, method = 'avNNet', preProcess = c('center','scale'), 
+                 linout = T, trace = F, MaxNWts = 10 * (ncol(training_data$x)+1) + 10 +1, maxit = 500)
+plot(avnnet_model)
+```
+```{r}
+avnn_pred = predict(avnnet_model, newdata = test_data$x)
+postResample(avnn_pred, test_data$y)
+```
+MARS model
+```{r}
+mars_grid = expand.grid(.degree = 1:2, .nprune = 2:38)
+set.seed(0)
+mars_model = train(x = training_data$x, y = training_data$y, method = 'earth', preProcess = c('center','scale'), tuneGrid = mars_grid)
+plot(mars_model)
+
+mars_pred = predict(mars_model, newdata = test_data$x)
+postResample(mars_pred, test_data$y)
+```
+```{r}
+varImp(mars_model)
+```
+It chosed x1 to x5 as the important variables
+
+SVM
+```{r}
+set.seed(0)
+svm_model = train(x = training_data$x, y = training_data$y, method = 'svmRadial', preProcess = c('center','scale'), tuneLength = 20)
+svm_pred = predict(svm_model, newdata = test_data$x)
+postResample(svm_pred, test_data$y)
+```
+
+#3 
+Build SVM, NN, MARS, KNN for the tecator data. Since neural networks are sensitive to correlated predictors, does pre-processing using PCA help the model?
+```{r}
+data(tecator)
+fat = endpoints[,2]
+absorp = data.frame(absorp)
+zero_cols = nearZeroVar(absorp)
+
+#split the data into test and training sets
+training = createDataPartition(fat, p = .08)
+absorp_training = absorp[training$Resample1,]
+fat_training = fat[training$Resample1]
+
+absorp_testing = absorp[-training$Resample1,]
+fat_testing = fat[-training$Resample1]
+```
+
+Build several models
+
+KNN model
+```{r}
+set.seed(0)
+knn_model = train(x = absorp_training, y = fat_training, method = 'knn', preProcess = c('center','scale'), tuneLength = 10)
+plot(knn_model)
+#predict
+knn_pred = predict(knn_model)
+postResample(knn_pred, fat_training)
+
+knn_pred = predict(knn_model, absorp_testing)
+postResample(knn_pred, fat_testing)
+```
+Neural network model
+```{r}
+nn_grid = expand.grid(.decay = c(0, .01, .1), .size = 1:10, .bag = F)
+set.seed(0)
+nnet_model = train(x = absorp_training, y = fat_training, method = 'nnet', preProcess = c("center","scale"), 
+                   linout = T, trace = F, MaxNWts = 10 * (ncol(absorp_training)+ 1) + 10 +1, maxit = 500)
+
+postResample(predict(nnet_model), fat_training)
+
+nn_pred = predict(nnet_model, newdata = absorp_testing)
+postResample(nn_pred, fat_testing)
+```
+
+Average NN model
+```{r}
+set.seed(0)
+avnnet_model = train(x = absorp_training, y = fat_training, method = 'avNNet', preProcess = c('center','scale'), 
+                     linout = T, trace = F, MaxNWts = 10 * (ncol(absorp_training)+1) + 10 + 1, maxit = 500)
+
+postResample(predict(avnnet_model), fat_training)
+
+avnn_pred = predict(avnnet_model, newdata = absorp_testing)
+postResample(avnn_pred, fat_testing)
+```
+
+MARS model
+```{r}
+mars_grid = expand.grid(.degree = 1:2, .nprune = 2:38)
+set.seed(0)
+mars_model = train(x = absorp_training, y = fat_training, method = 'earth', tuneGrid = mars_grid, preProcess = c('center','scale'))
+
+mars_pred = predict(mars_model, absorp_testing)
+postResample(mars_pred, fat_testing)
+```
+```{r}
+varImp(mars_model)
+```
+
+SVM model
+```{r}
+set.seed(0)
+svm_model = train(x = absorp_training, y = fat_training, method = 'svmRadial', preProcess = c('center','scale'), tuneLength = 20)
+
+svm_pred = predict(svm_model, absorp_testing)
+postResample(svm_pred, fat_testing)
+```
+Check model differences
+```{r}
+resamp = resamples(list(knn = knn_model, svm = svm_model, nnet = nnet_model, avnnet = avnnet_model))
+summary(resamp)
+summary(diff(resamp))
+```
+
+#4 
+Return to the permeability problem outlined in Exercise 6.2. Train several non-linear regression models and evaluate the resampling and test set performance
+a - which non linear model gives the optimal resampling and test set performance?
+b - do any of the non linear models outperform linear models you've previously developed. If so, what might tell you about the under lying relationship between predictors and response?
+c - would you recommend any of your model to replace permeability laboratory experiment
+
+```{r}
+library(caret)
+library(AppliedPredictiveModeling)
+data("permeability")
+```
+
+Fix the data and split the data
+```{r}
+dim(fingerprints)
+zero_cols = nearZeroVar(fingerprints)
+
+#remove zero variance colummnns
+fingerprints = fingerprints[,-zero_cols]
+
+#split the data into testing and training set
+training = createDataPartition(permeability, p = 0.8)
+
+fingerprints_training = fingerprints[training$Resample1, ]
+permeability_training = permeability[training$Resample1]
+
+fingerprints_testing = fingerprints[-training$Resample1, ]
+permeability_testing = permeability[-training$Resample1]
+```
+
+
+Build various models and compare performance
+
+KNN model
+```{r}
+#use default train control setting
+set.seed(0)
+knn_model = train(x = fingerprints_training, y = permeability_training, method= 'knn', preProcess = c('center','scale'), tuneLength = 10)
+
+knn_model
+
+#training pred
+knn_train_pred = predict(knn_model, newdata = fingerprints_training)
+postResample(knn_train_pred, permeability_training)
+
+#testing pred
+knn_test_pred = predict(knn_model, newdata = fingerprints_testing)
+postResample(knn_test_pred, permeability_testing)
+```
+Neural network model
+```{r}
+nn_grid = expand.grid(.decay = c(0, .01, .1), .size = 1:10, .bag = F)
+set.seed(0)
+nnet_model = train(x = fingerprints_training, y = permeability_training, method = 'nnet', preProcess = c('center','scale'),
+                   linout = T, trace = F, MaxNWts = 10 * (ncol(fingerprints_training) + 1) + 10 + 1, maxit = 500)
+
+```
+
+```{r}
+nnet_model
+
+#training pred
+nn_train_pred = predict(nnet_model, newdata = fingerprints_training)
+postResample(nn_train_pred, permeability_training)
+
+#testing pred
+nn_test_pred = predict(nnet_model, newdata = fingerprints_testing)
+postResample(nn_test_pred, permeability_testing)
+```
+
+Averaged neural net model
+```{r}
+set.seed(0)
+avnnet_model = train(x = fingerprints_training, y = permeability_training, method = 'avNNet', preProcess = c('center','scale'),
+                   linout = T, trace = F, MaxNWts = 10 * (ncol(fingerprints_training) + 1) + 10 + 1, maxit = 500)
+
+avnnet_model
+
+#training pred
+avnn_train_pred = predict(avnnet_model, newdata = fingerprints_training)
+postResample(avnn_train_pred, permeability_training)
+
+#testing pred
+avnn_test_pred = predict(avnnet_model, newdata = fingerprints_testing)
+postResample(avnn_test_pred, permeability_testing)
+```
+
+MARS model
+```{r}
+mars_grid = expand.grid(.degree = 1:2, .nprune = 2:38)
+set.seed(0)
+
+mars_model = train(x = fingerprints_training, y = permeability_training, method = 'earth', preProcess = c('center','scale'), tuneGrid = mars_grid)
+
+mars_model
+
+#training pred
+mars_train_pred = predict(mars_model, fingerprints_training)
+postResample(mars_train_pred, permeability_training)
+
+#testing pred
+mars_test_pred = predict(mars_model, fingerprints_testing)
+postResample(mars_test_pred, permeability_testing)
+```
+
+
+svm
+```{r}
+set.seed(0)
+svm_model = train(x  = fingerprints_training, y = permeability_training, method = 'svmRadial', preProcess = c('center','scale'), tuneLength = 20)
+
+svm_model
+
+svm_train_pred = predict(svm_model, fingerprints_training)
+postResample(svm_train_pred, permeability_training)
+
+svm_test_pred = predict(svm_model, fingerprints_testing)
+postResample(svm_test_pred, permeability_testing)
+```
+```{r}
+resamp = resamples(list(svm = svm_model, knn = knn_model, nn = nnet_model, mars = mars_model))
+summary(resamp)
+```
+
+```{r}
+summary(diff(resamp))
+```
+
+From here, we can say that the linear models with feature selection are better.
+
+#5 
+Exercise 6.3 describes the data for chemical manufacturing process. Use the same data imputation, data splitting, and data preprocessing steps as before and train several non linear models. 
+a - which non-linear regression model gives optimal resampling and test set performance
+b - which predictors are most important in the optimal non-linear regression model. Do either biological or process viaralbes dominate the list? How do the top 10 predictors compare to the top 10 in optimal linear model
+c - explore relationships between top predictors and response
+
+```{r}
+library(AppliedPredictiveModeling)
+library(caret)
+data("ChemicalManufacturingProcess")
+
+process_predictors = ChemicalManufacturingProcess[,2:58]
+yield = ChemicalManufacturingProcess[,1]
+
+n_samples = dim(process_predictors)[1]
+n_features = dim(process_predictors)[2]
+```
+
+Fill missing data
+```{r}
+library(purrr)
+proc_pred = process_predictors
+replacements = sapply(process_predictors, median, na.rm = T)
+for (ci in 1:n_features){
+  bad_inds = is.na(process_predictors[,ci])
+  process_predictors[bad_inds, ci] = replacements[ci]
+}
+
+map_dbl(process_predictors, mean)
+```
+Look for non zero var
+```{r}
+zero_cols = nearZeroVar(process_predictors)
+length(zero_cols)
+names(process_predictors)[zero_cols]
+process_predictors = process_predictors[,-zero_cols]
+```
+Split the data
+```{r}
+training = createDataPartition(yield, .8)
+proc_pred_train = process_predictors[training$Resample1,]
+yield_train = yield[training$Resample1]
+
+proc_pred_test = process_predictors[-training$Resample1,]
+yield_test = yield[-training$Resample1]
+```
+
+Build model
+```{r}
+set.seed(0)
+knn_model = train(x = proc_pred_train, y = yield_train, method = 'knn', preProcess = c('center','scale'), tuneLength = 10)
+
+#nn model
+nn_grid = expand.grid(.decay = c(0, 01, .1), .size = 1:10, .bag = F)
+nnet_model = train(x = proc_pred_train, y = yield_train, method = 'nnet', preProcess = c('center','scale'), 
+                   linout = T, trace = F, MaxNWts = 10 * (ncol(proc_pred_train)+1) + 10 +1 , maxit = 500)
+
+#mars model
+mars_grid=  expand.grid(.degree = 1:2, .nprune = 2:38)
+mars_model = train(x = proc_pred_train, y = yield_train, method = 'earth', tuneGrid = mars_grid, preProcess = c('center','scale'))
+
+#svm model
+svm_model = train(x = proc_pred_train, y = yield_train, method = 'svmRadial', preProcess = c('center','scale'), tuneLength = 20)
+
+```
+
+Training and testing error rate
+```{r}
+print('knn model')
+print('Training resample')
+postResample(predict(knn_model),yield_train)
+print('test resample')
+postResample(predict(knn_model, proc_pred_test), yield_test)
+
+print('NN model')
+print('Training resample')
+postResample(predict(nnet_model),yield_train)
+print('test resample')
+postResample(predict(nnet_model, proc_pred_test), yield_test)
+
+print('mars model')
+print('Training resample')
+postResample(predict(mars_model),yield_train)
+print('test resample')
+postResample(predict(mars_model, proc_pred_test), yield_test)
+
+print('svm model')
+print('Training resample')
+postResample(predict(svm_model),yield_train)
+print('test resample')
+postResample(predict(svm_model, proc_pred_test), yield_test)
+```
+```{r}
+resamp = resamples(list(knn = knn_model, nnet = nnet_model, svm = svm_model, mars = mars_model))
+summary(resamp)
+```
+
+Best model is svm
+```{r}
+varImp(svm_model)
+```
+
+SVM and enet has the same variable importance
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

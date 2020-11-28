@@ -1,0 +1,227 @@
+---
+title: "Chap19 - Introduction to feature Selection"
+author: "Me"
+date: "10/15/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##computing
+
+Uses packages from APM, caret, klaR, leaps, MASS, pROC, rms, and stats
+
+The data are contained in the APM package. The data object consists of a dataframe called predictors and factor vector of class values called diagnosis. The ff code is made to prepare the data
+
+```{r}
+library(AppliedPredictiveModeling)
+data(AlzheimerDisease)
+
+## The baseline set of predictors
+bl <- c("Genotype", "age", "tau", "p_tau", "Ab_42", "male")
+
+## The set of new assays
+newAssays <- colnames(predictors)
+newAssays <- newAssays[!(newAssays %in% c("Class", bl))]
+
+## Decompose the genotype factor into binary dummy variables
+
+predictors$E2 <- predictors$E3 <- predictors$E4 <- 0
+predictors$E2[grepl("2", predictors$Genotype)] <- 1
+predictors$E3[grepl("3", predictors$Genotype)] <- 1
+predictors$E4[grepl("4", predictors$Genotype)] <- 1
+genotype <-  predictors$Genotype
+```
+
+```{r}
+## Partition the data
+library(caret)
+set.seed(730)
+split <- createDataPartition(diagnosis, p = .8, list = FALSE)
+
+adData <- predictors
+adData$Class <- diagnosis
+
+training <- adData[ split, ]
+testing  <- adData[-split, ]
+```
+
+```{r}
+
+predVars <- names(adData)[!(names(adData) %in% c("Class",  "Genotype"))]
+
+## This summary function is used to evaluate the models.
+fiveStats <- function(...) c(twoClassSummary(...), defaultSummary(...))
+
+## We create the cross-validation files as a list to use with different 
+## functions
+
+set.seed(104)
+index <- createMultiFolds(training$Class, times = 5)
+
+## The candidate set of the number of predictors to evaluate
+varSeq <- seq(1, length(predVars)-1, by = 2)
+
+## We can also use parallel processing to run each resampled RFE
+## iteration (or resampled model with train()) using different
+## workers.
+```
+
+
+#Forward, backward, and stepwise
+
+There are several R functions for this class of wrappers
+- `step` in stats package can be used to search for appropriate subsets of linear regression and generalized linear models (from lm and glm function). The `direction` argument controls the search method ('both','forward','backward'). A more general function is the `stepAIC` in the MASS package, which can handle additional model types. In either case AIC is used as objective function
+- `fastbw` function in the rms package conducts similar searches but has optional but unrecommended choice of using p-value as the objective function
+- `regsubsets` in the leaps package has similar functionality
+- the klaR package contains `stepclass` function that searches the predictor space for models that maximize cv accuracty rates. The function has built in methods for several models such as lda, but can be more generalized. 
+
+THe caret package function train has wrappers for `leaps`, `stepAIC`, and `stepclass`, so that feature selection can be resampled and the risk of bias is reduced. 
+
+For example, to use `stepAIC` iwth logistic function takes initial model as input. To illustrate the function, a small model is used
+```{r}
+library(MASS)
+initial = glm(Class ~ tau + VEGF + E4 + IL_3, data = training, family = binomial())
+```
+```{r}
+stepAIC(initial, direction = 'both')
+```
+
+The function returns a glm object with final rpredictor set. THe other functions above use similar strategies
+
+## Recursive Feature Elimination
+
+the caret and varSelRF packages contain functions for recursive feature elimination. WHile the `varSelRF` function is specific to random forest, the `rfe` function in caret is a general framework for any predictive model. FOr the latter, there are predefined functions for RF, LDA, bagged trees, naive bayes, GLM, LM, and LR. The random forest functions are in a list called rfFuncs:
+
+```{r}
+str(rfFuncs)
+```
+Each of these function defines a step in algo 19.2
+`summary` - defines how predictions will be evaluated line 10
+`fit` allows users to specify model and conduct parameter tuning lines 6 and 12
+`pred` function generates predictions
+`rank` function generates variable importance measures line 2
+`selectSize` chooses appropriate subset size line 11
+`selectVar` picks variables used in the fianl model
+
+These options can be changed. For example,to compute for the expanded set of performance measures
+```{r}
+newRF = rfFuncs
+newRF$summary = fiveStats
+```
+
+
+To run RFE for random forest, the syntax is
+```{r}
+ctrl = rfeControl(method = 'repeatedcv', repeats = 5, verbose = T, functions = newRF, index = index)
+```
+
+
+```{r}
+library(doParallel)
+cl = makeCluster(8)
+registerDoParallel(cl)
+```
+
+
+```{r}
+set.seed(721)
+rf_rfe = rfe(x = training[,predVars], y = training$Class, sizes = varSeq, metric = 'ROC', rfeControl = ctrl, ntree = 1000)
+rf_rfe
+```
+
+The process of predicting new samples is straightforward
+```{r}
+predict(rf_rfe, newdata = head(testing))
+```
+
+Built in functions predict classes and probabilities for classification. 
+
+There are also built in functions to do recursive feature selection for models that require retuning at each iteration. For example, to fit SVM
+```{r}
+svm_funcs = caretFuncs
+svm_funcs$summary = fiveStats
+
+ctrl = rfeControl(method = 'repeatedcv', repeats = 5, verbose = T, functions = svm_funcs, index = index)
+```
+```{r}
+set.seed(721)
+svm_rfe =rfe(x = training[,predVars], y = training$Class, sizes = varSeq, metric = 'ROC',rfeControl = ctrl,
+             ## now options to train()
+             method = 'svmRadial', tuneLength = 12, preProc = c('center','scale'), 
+             ## below are inner resampling process
+             trControl= trainControl(method = 'cv', verboseIter = F, classProbs = T))
+```
+
+Caret web package contains more detials and examples related to RFE
+
+## Filter methods
+`caret` has function called `sbf` (selection by filter) that can be used to screen predictors for models and estiamte performance using resampling. ANy function can be written to screen predictors. 
+
+For example, to compute for p-value for each predictor, depending on the data type, the ff approach could be used
+```{r}
+p_score = function(x,y){
+  numX = length(unique(x))
+  if (numX>2){
+    ## with many values in x, compute a t-test
+    out = t.test(x ~y)$p.value
+  }else{
+    #for binary predictors, use fisher's exact test
+    out = fisher.test(factor(x), y)$p.value
+  }
+}
+
+scores = apply(X = training[,predVars], MARGIN = 2, FUN = p_score, y= training$Class)
+head(scores)
+```
+A function can also be designed to apply p-value correction such as Bonferroni procedure
+```{r}
+p_correction = function(score,x,y){
+  ##the options x and y are required
+  score = p.adjust(score, 'bonferroni')
+  
+  #return a logical predictor to decide which predictors to retain
+  keepers = (score <= .5)
+  keepers
+}
+
+tail(p_correction(scores))
+```
+As before, `caret` contains a number of built in functions for ffilter methods: linear regression, random forest, bagged trees, LDA, naive bayes(see ?rfSBF). FOr example, ldaSBF has the ff functions
+```{r}
+str(ldaSBF)
+```
+These functions are similar to those shown for `rfe`. The `score` computes for measure of importance. The function `filter` takes these values and determines which predictors to pass
+
+For the biomarker data, the filtered LDA model was fit using
+```{r}
+lda_with_pvalues = ldaSBF
+lda_with_pvalues$score = p_score
+lda_with_pvalues$summary = fiveStats
+lda_with_pvalues$filter = p_correction
+```
+
+```{r}
+sbf_ctrl = sbfControl(method= 'repeatedcv', repeats = 5, verbose = T, functions = lda_with_pvalues, index = index)
+lda_filter = sbf(training[,predVars], training$Class, tol = 1.e-12, sbfControl = sbf_ctrl)
+```
+Again, `caret` pacakge web has additional details regarding rfe and sbf functions, including features not shown here
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

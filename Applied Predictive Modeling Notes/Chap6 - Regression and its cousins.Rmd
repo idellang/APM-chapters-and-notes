@@ -1,0 +1,393 @@
+---
+title: "Chap6 -Linear regression and its cousins"
+author: "Me"
+date: "9/23/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## From the R file
+
+Section 6.1 Case Study: Quantitative Structure Activity Relationship Modeling
+```{r}
+library(AppliedPredictiveModeling)
+data(solubility)
+library(lattice)
+```
+
+
+Initial plots
+```{r}
+xyplot(solTrainY ~ solTrainX$MolWeight, type = c('p','g'), 
+       ylab = 'Solubility (log)',
+       main = '(a)',
+       xlab = 'Molecular Weight')
+```
+```{r}
+library(ggplot2)
+ggplot(data = NULL, aes(x = solTrainX$MolWeight, y = solTrainY))+
+  geom_point(color = 'blue', shape = 21)
+```
+
+```{r}
+xyplot(solTrainY ~ solTrainX$NumRotBonds, type = c("p", "g"),
+       ylab = "Solubility (log)",
+       xlab = "Number of Rotatable Bonds")
+bwplot(solTrainY ~ ifelse(solTrainX[,100] == 1, 
+                          "structure present", 
+                          "structure absent"),
+       ylab = "Solubility (log)",
+       main = "(b)",
+       horizontal = FALSE)
+```
+```{r}
+x_data =  ifelse(solTrainX[,100] == 1, 
+                          "structure present", 
+                          "structure absent")
+ggplot(data = NULL, aes(x =x_data, y = solTrainY))+
+  geom_boxplot()+
+  labs(y = 'Solubility(log)',
+    x = NULL
+  )
+```
+
+Find columns that are not fingeprints
+
+```{r}
+notFingerprints <- grep("FP", names(solTrainXtrans))
+
+library(caret)
+featurePlot(solTrainXtrans[, -notFingerprints],
+            solTrainY,
+            between = list(x = 1, y = 1),
+            type = c("g", "p", "smooth"),
+            labels = rep("", 2))
+```
+
+```{r}
+library(corrplot)
+corrplot(cor(solTrainX[,-notFingerprints]), order = 'hclust', tl.cex = .8)
+```
+## Linear regression
+
+Create a control function that will be used across models. We create the fold assignments explicitly instead of relying on the random number seed
+```{r}
+set.seed(100)
+indx = createFolds(solTrainY, returnTrain = T)
+ctrl = trainControl(method = 'cv', index = indx)
+```
+
+Linear regression model with all of the predictors. This will produce some warnings that a rank deficient fit may be misleading. This is related to predictors being highly correlated that some of the math has broken down
+```{r}
+set.seed(100)
+lm_tune0 = train(x = solTrainX, y = solTrainY, method = 'lm', trControl = ctrl)
+lm_tune0
+```
+Add another using set of predictors reduced by unsupervised filtering. We apply a filter to reduce extreme between-predictor correlations. note the lack of warnings
+```{r}
+toohigh = findCorrelation(cor(solTestXtrans),.9)
+trainx_filtered = solTrainX[, -toohigh]
+testx_filtered = solTestXtrans[,-toohigh]
+
+set.seed(100)
+lm_tune = train(x = trainx_filtered, y = solTrainY, method = 'lm', trControl = ctrl)
+lm_tune
+```
+
+Save the test results in a dataframe.
+```{r}
+test_results = data.frame(obs = solTestY, pred = predict(lm_tune, testx_filtered))
+ggplot(data = test_results, aes(obs, pred))+
+  geom_point()
+```
+
+Partial Least Squares
+
+Run PLS and PCR in solubility data and compare the results
+```{r}
+set.seed(100)
+pls_tune = train(x = solTrainXtrans, y = solTrainY, method = 'pls', tuneGrid = expand.grid(ncomp = 1:20), trControl = ctrl)
+pls_tune
+```
+```{r}
+test_results$PLS = predict(pls_tune, solTestXtrans)
+test_results
+```
+
+```{r}
+set.seed(100)
+pcr_tune = train(x = solTrainXtrans, y = solTrainY, method = 'pcr', tuneGrid = expand.grid(ncomp = 1:35), trControl = ctrl)
+pcr_tune
+```
+
+```{r}
+pls_resamples = pls_tune$results
+pls_resamples$model = 'PLS'
+pcr_resamples = pcr_tune$results
+pcr_resamples$model = 'PCR'
+plsPlotData <- rbind(pls_resamples, pcr_resamples)
+```
+
+```{r}
+xyplot(RMSE ~ ncomp, data = plsPlotData, xlab = '# of components',
+       ylab = 'RMSE (CV)', auto.key = list(columns = 2), groups = model, type = c('o','g'))
+```
+```{r}
+pls_imp = varImp(pls_tune, scale = F)
+plot(pls_imp, top = 25)
+```
+## Penalized models
+```{r}
+ridge_grid = expand.grid(lambda = seq(0, .1, length = 5))
+
+set.seed(100)
+ridge_tune = train(x = solTrainXtrans, y = solTrainY,
+                   method = 'ridge', tuneGrid = ridge_grid, 
+                   trControl = ctrl, preProc = c('center','scale'))
+ridge_tune
+```
+```{r}
+plot(ridge_tune, xlab = 'penalty')
+```
+```{r}
+enet_grid = expand.grid(lambda = c(0, .01, .1), fraction = seq(0.05, 1, length = 10))
+
+set.seed(100)
+enet_tune = train(x = solTrainX, y = solTrainY, method = 'enet', tuneGrid = enet_grid, trControl = ctrl, preProc = c('center','scale'))
+enet_tune
+```
+```{r}
+plot(enet_tune)
+```
+```{r}
+test_results$Enet = predict(enet_tune, solTestXtrans)
+test_results %>%
+  gather(-obs, key = 'model', value = 'value') %>%
+  ggplot(aes(obs, value, color = model))+
+  geom_point()
+```
+#Computing
+
+The R packages elasticnet, caret, lars, MASS, pls, and stats will be referenced. The solubility data can be obtained from the APM package. the predictors for training and tests sets are contained in the data frames called `solTrainX` and `solTestX`, to obtain the data
+```{r}
+library(AppliedPredictiveModeling)
+data(solubility)
+
+#the data objects begin with 'sol'
+ls(pattern = '^sol')
+```
+Each column of the data corresponds to a predictor and the rows corresponds to compounds. There are 228 columns in the data. A random sample of column names
+```{r}
+set.seed(2)
+sample(names(solTrainX), 8)
+```
+The FP columns corresponds to binary 0/1 fingerprint predictors that are associated with presence or absence of a particular chemical structure. Alternate versiosn of these data have been box-cox transformed and contained in the data frames solTrainXtrans and solTestXtrans. These modified versions were used in the analyses in the subsequent chapters.
+The solubility values for each compound are contained in numeric vectors named solTrainY and solTestY
+
+## Ordinary Linear Regression
+
+The primary function for creating linear regression models using simple least squares is lm. This function takes a formula and dataframe as input. Because of this, the training set of predictors and outcome should be contained in the same dataframe. We can create a new data frame for this purpose
+```{r}
+training_data = solTrainXtrans
+training_data$Solubility = solTrainY
+```
+
+To fit a linear model with all predictors, 
+```{r}
+lm_fit_all = lm(Solubility ~., data = training_data)
+```
+The summmary method displays model summary statistics, the parameter estimates, their standard errors, and p-values for testing whether each individual component is different than 0 
+```{r}
+library(broom)
+library(tidyverse)
+tidy(lm_fit_all) %>%
+  filter(p.value < .05)
+```
+
+```{r}
+summary_lm = summary(lm_fit_all)
+summary_lm$r.squared
+```
+To compute for model solubility for new samples, the `predict` method is used.
+```{r}
+lm_pred1 = predict(lm_fit_all, solTestXtrans)
+head(lm_pred1)
+```
+We can collect the observed and predicted values into a dataframe. Then use the caret function `defaultSummary` to estimate test performance
+```{r}
+library(caret)
+lm_values1 = data.frame(obs = solTestY, pred = lm_pred1)
+defaultSummary(lm_values1)
+```
+Based on the test set, summaries were optimistic. If we wanted a robust linear regression model, then robust linear model `rlm` from the MASS package could be used, which by default employs Huber Approach. 
+```{r}
+library(MASS)
+rlm_fit_all = rlm(Solubility ~., data = training_data)
+```
+
+the `train` function generates a resampling of performance. Because the training size is not small, 10-fold CV should produce reasonable estimates of model performance. The function `trainControl` specifies the type of resampling
+```{r}
+ctrl = trainControl(method = 'cv', number = 10)
+```
+`train` will accept a model formula or non-formula interface. The non formula interface is
+```{r}
+set.seed(100)
+lm_fit1 = train(x = solTrainXtrans, y = solTrainY, method = 'lm', trControl = ctrl)
+lm_fit1
+```
+For models built to explain, it is important to check model assumptions such as residual distribution. for predictive models, some of the same diagnostic techniques can shed light on areas where the model is not predictign well. For example we could plot residuals vs predicted values for the model. If the plot shows random cloud of points, we feel more comfortable that there are no major terms missing from the model or significant outliers. ANother important plot is the predicted values versus observed values to assess how close predicted to observed are (using training samples).
+```{r}
+xyplot(solTrainY ~ predict(lm_fit1), 
+       type = c('p','g'), #points and grid background
+       xlab = 'Predicted',
+       ylab = 'Observed')
+```
+```{r}
+xyplot(resid(lm_fit1) ~ predict(lm_fit1),
+       type = c('p','g'),
+       xlab = 'predicted',
+       ylab = 'Residuals')
+```
+Resid function generates the model residuals for the training set and that using predict function w/o argument returns predicted value for the training set. For this model there were no signs in the diagnostic plot
+
+To build a smaller model without predictors with extremely high correlations, we can use methods in preprocessing to reduce number of predicts.
+```{r}
+thresh = .9
+too_high = findCorrelation(cor(solTrainXtrans), thresh)
+corrPred = names(solTrainX)[too_high]
+trainx_filtered = solTrainXtrans[,-too_high]
+testx_filtered = solTestXtrans[,-too_high]
+
+set.seed(100)
+lm_filtered = train(solTrainXtrans, solTrainY, method = 'lm', trControl = ctrl)
+
+```
+Robust linear regression can also be performed using `train` function. however, it is important to note that rlm does not allow the covariance matrix of predictors to be singular unlike lm function. To ensure that predictors are not singular, we will preprocess predictors using PCA, Using filtered set of predictors, the robust regression model performance s
+```{r}
+set.seed(100)
+rlm_pca = train(solTrainXtrans, solTrainY, method = 'rlm', preProc = 'pca', trControl = ctrl)
+rlm_pca
+```
+
+## Parital Least Squares
+
+The `pls` package has functions for PLS and PCR. The SIMPLS is also avaialable. By default, the pls package uses the first Dayal and MacGregor kernel algorithm while other algo can be specified using the method argument using the values `oscorepls`, `simpls`, `widekernelpls`. The pslr function, like lm requires a model formula
+```{r}
+library(pls)
+pls_fit = plsr(Solubility ~., data = training_data)
+```
+
+The number of components can be fixed using the ncomp argument or if left by default, the maximum number of components will be calculated. Predictions on new samples can be calculated using predict function. Predictions can be made for specific number of components or for several values at a time
+```{r}
+predict(pls_fit, solTestXtrans[1:5, ], ncomp = 1:2)
+```
+the `pslr` function has options for either kfold or loocv (via the `validation` argument) or the PLS algo such as SIMPLS (using the `method` argument). 
+There are several helper functions to extract to extract PLS components. PLS scores (scores), and other quantities. THe plot function has visualizations of many aspects of the model
+
+`train` function can also be used with method values of `pls` such as `oscorepls`, `simpls`,`widekernelpls`. For example
+```{r}
+set.seed(100)
+pls_tune = train(solTrainXtrans, solTrainY, method = 'pls', #default tuning grid
+                 tuneLength = 20, trControl = ctrl, preProc = c('center','scale'))
+pls_tune
+```
+```{r}
+pls_tune$results
+```
+
+```{r}
+pred = predict(pls_tune, solTestXtrans)
+ggplot(data = NULL, aes(pred, solTestY))+
+  geom_point()+
+  xlim(-10,2)+
+  ylim(-10,2)+
+  geom_abline(slope = 1, intercept = 0)
+```
+
+## Penalized regresion models
+
+Ridge regression models can be created using `lm.ridge` function in the MASS package or the `enet` function in the elastic net package. When calling the enet function, the lambda argument specifies the ridge regression penalty.
+```{r}
+library(elasticnet)
+ridge_model = enet(x = as.matrix(solTrainXtrans), y = solTrainY, lambda = .01)
+```
+
+Recall that the elastic net model has both ridge penalities and lasso penalties. R object ridge_model only has fixed ridge penalty value. The lasso penalty can be computed efficiently for many values of the penalty. The lasso penalty can be computed efficiently for many values of penalty. The `predict` function for enet objects generates predictions for one or more values of the lasso penalty simultaneously using `s` and `mode` arguments. For ridge regression, we only desire a single lasso penalty of 0, so we want full solution. To produce ridge regression, we define s = 1 with mode = 'fraction'. This last option defines how the amount of penalty is defined; a value of 1 corresponds to faction of 1 or full solution
+```{r}
+ridge_pred = predict(ridge_model, newx = as.matrix(solTestXtrans), s = 1, mode = 'fraction', type = 'fit')
+head(ridge_pred$fit)
+```
+To tune over the penalty, train can be used with different method
+```{r}
+ridge_grid = data.frame(.lambda = seq(0, .1, length = 15))
+set.seed(100)
+ridge_reg_fit = train(solTrainXtrans, solTrainY, 
+                      method = 'ridge', ##fit model over many values
+                      tuneGrid = ridge_grid,
+                      trControl = ctrl,
+                      #put predictors on same scale
+                      preProc = c('center','scale'))
+
+ridge_reg_fit
+```
+
+The lasso model can be estimated using a number of different functions. The lars package contains lars function, the elasticnet package has enet and glmnet package has function of the same name. The syntax for these functions is very similar. For enet function the syntax would be
+```{r}
+enet_model = enet(x = as.matrix(solTrainXtrans), y = solTrainY, lambda = 0.01, normalize = T)
+```
+
+The predictor data must be a matrix object, so the dataframe must be converted. The predictors should be centered and scaled prior to modeling. The normalize argument will do standardization automatically. The parameter lambda controls the ridge-regression penalty and setting this to 0 fits the lasso model. The lasso penalty does not need to be specified until the time of prediction
+```{r}
+enet_pred = predict(enet_model, newx = as.matrix(solTestXtrans), s = .1, mode = 'fraction', type = 'fit')
+names(enet_pred)
+head(enet_pred$fit)
+```
+To determine which predictors are used in the model, the `predict` method is used with type = 'coefficients'
+```{r}
+enetCoef = predict(enet_model, newx = as.matrix(solTestXtrans), s = .1, mode = 'fraction', type = 'coefficients')
+tail(enetCoef$coefficients)
+```
+More than one value of s can be used with predict function to generate predictiosn from more than one model simultaenously.
+Other packages to fit lasso model or some alternate version of the model are `biglars` for large dataset, FLLat for fused lasso, grplasso, penalized, relaxo (relaxed lasso), and others. To tune elastic model using train, we specify method = 'enet'. Here we tune the model over a custom of penalties
+```{r}
+enet_grid = expand.grid(.lambda = c(0, .05, 0.1, .5, 1),
+                        .fraction = seq(.05, 1, length = 20))
+set.seed(100)
+enet_tune = train(solTrainXtrans, solTrainY, method = 'enet',
+                  tuneGrid = enet_grid, trControl = ctrl, 
+                  preProc = c('center','scale'))
+plot(enet_tune)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

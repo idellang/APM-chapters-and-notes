@@ -1,0 +1,168 @@
+---
+title: "Chap3 - Exercise"
+author: "Me"
+date: "9/5/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+The UC Irvine Machine Learning repo contains dataset on glass identification. The data consists of 214 glass samples labaled as one of seven categories. There are nine predictors, including the refractive index and percentage of eight elements: Na, Mg, Al, Si, K, Ca, Ba, and Fe. The data can be accessed via:
+```{r}
+library(mlbench)
+data("Glass")
+head(Glass)
+str(Glass)
+```
+##1
+a. Using visualizations, explore the predictor variables to understand their distributions as well as the relationships between predictors
+
+Look at pairwise scatterplots
+```{r}
+pairs(Glass)
+```
+Look at correlation for all the predictors except the last column
+```{r}
+library(corrplot)
+corr_pred = cor(Glass[,-10])
+corrplot(corr_pred, order = 'hclust')
+```
+
+We can see the groups that are correlated. RI and Ca are correlated
+
+Identify columns that suffer from high correlation
+```{r}
+idx_highcor = findCorrelation(corr_pred, cutoff = .5)
+Glass[,idx_highcor]
+```
+
+It is recommended to remove these variables
+
+Look at correlation of each predictor with the class label
+```{r}
+cor(Glass[,-10], as.numeric(Glass[,10]))
+```
+Mg and Al, NA and Ba has high correlation with the Type. Ri and Ca do not, I think we can remove these variables
+
+Visualize these data in response to their type
+```{r}
+Glass %>%
+  select(Mg, Al, Na, Ba, Type) %>%
+  gather(Mg, Al, Na, Ba, key = 'Element', value = 'Value') %>%
+  ggplot(aes(Type, Value))+
+  geom_boxplot()+
+  facet_wrap(~Element)
+```
+
+
+##b
+Do there appear to be any outliers in the data? Are any predictors skewed?
+
+compute for skewness for each predictor
+```{r}
+map_dbl(Glass[,-10], skewness)
+```
+High values in K, Ba, and Ca
+```{r}
+Glass %>%
+  select(K, Ba, Ca) %>%
+  gather(K, Ba, Ca, key = 'Element', value = 'Value') %>%
+  ggplot(aes(Value, fill = Element))+
+  geom_histogram(position = 'identity', alpha = .4)
+```
+##C Are there any relevant transformation that might improve the model?
+
+Transform these predictors using boxcox
+```{r}
+Glass$Mg = Glass$Mg + 1.e-6 # add a small value so that BoxCoxTransfs will converge 
+Glass$K = Glass$K + 1.e-6
+Glass$Ba = Glass$Ba + 1.e-6
+Glass$Fe = Glass$Fe + 1.e-6
+
+boxcox_skewness = function(x){
+  BCT = BoxCoxTrans(x)
+  x_bc = predict( BCT, x )
+  skewness(x_bc) 
+}
+
+map_dbl(Glass[,-10], boxcox_skewness)
+```
+Check the histogram after transforming K
+```{r}
+Glass_k_boxcox = BoxCoxTrans(Glass$K) #model
+Glass_k_trans = predict(Glass_k_boxcox, Glass$K) #predicted values
+hist(Glass_k_trans)
+```
+
+#2 
+The soybean data can be found at UC Irvine ML repo. Data were collected to predict disease in 683 soybeans. The 35 predictors are mostly categorical and include info on the environmental conditions. The outcome labels consists of 19 distinct classes
+```{r}
+data("Soybean")
+head(Soybean)
+```
+
+Check zero variance columns
+```{r}
+zero_cols = nearZeroVar(Soybean)
+Soybean[,zero_cols]
+```
+
+
+Check missing values
+```{r}
+map_dbl(Soybean, function(x) sum(is.na(x))/nrow(Soybean))
+```
+
+Impute data for the NAs
+```{r}
+impute_model = preProcess(Soybean[,-1], method = c('knnImpute'), na.remove = F)
+predict(impute_model, Soybean[,-1]) %>%
+  map_dbl(function(x) sum(is.na(x)/nrow(.)))
+```
+```{r}
+preProcess( Soybean[,-1], method=c("knnImpute"), na.remove=FALSE ) 
+```
+
+Chapter 5 introduces Quantitative Structure-Activity Relationship (QSAR) modeling where characteristics of chemical compounds are used to predict other chemical properties. The caret package contaisn the QSAR dataset. Here, the ability of a chemical to permeate the blood brain barrier was experimentally determined for 208 compounds. 134 descriptors were measured for each compounds
+
+```{r}
+library(caret)
+data('BloodBrain')
+data(BloodBrain)
+```
+
+Do any individual predictors have degenerate distributions?
+
+High skewness data
+```{r}
+bbbDescr [map_dbl(bbbDescr , function(x) skewness(x) > 2) == 1]
+```
+
+Degenerate columns
+```{r}
+zero_cols = nearZeroVar(bbbDescr)
+bbbDescr[,zero_cols]
+```
+
+Look for strong correlations
+```{r}
+corrplot(cor(bbbDescr), order = 'hclust')
+```
+Find high cor columns
+```{r}
+highCorr = findCorrelation(cor(bbbDescr), cutoff = .7)
+bbbDescr_ind = bbbDescr[,-highCorr]
+corrplot( cor(bbbDescr_ind) )
+```
+
+No high correlation
+
+
+
+
+
+
